@@ -11,6 +11,7 @@ pub fn init<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
             title TEXT,
             abstract TEXT,
             publish_year INTEGER,
+            journal TEXT,
             doi TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -64,5 +65,84 @@ pub fn init<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS paper_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            UNIQUE(paper_id, chunk_index),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            anchor_text TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    ensure_papers_file_hash_column(&conn)?;
+    ensure_papers_journal_column(&conn)?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_papers_file_hash ON papers(file_hash)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper_id ON paper_chunks(paper_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_paper_id ON notes(paper_id)",
+        [],
+    )?;
+
     Ok(conn)
+}
+
+fn ensure_papers_file_hash_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(papers)")?;
+    let mut rows = stmt.query([])?;
+    let mut has_file_hash = false;
+
+    while let Some(row) = rows.next()? {
+        let column_name: String = row.get(1)?;
+        if column_name == "file_hash" {
+            has_file_hash = true;
+            break;
+        }
+    }
+
+    if !has_file_hash {
+        conn.execute("ALTER TABLE papers ADD COLUMN file_hash TEXT", [])?;
+    }
+
+    Ok(())
+}
+
+fn ensure_papers_journal_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(papers)")?;
+    let mut rows = stmt.query([])?;
+    let mut has_journal = false;
+
+    while let Some(row) = rows.next()? {
+        let column_name: String = row.get(1)?;
+        if column_name == "journal" {
+            has_journal = true;
+            break;
+        }
+    }
+
+    if !has_journal {
+        conn.execute("ALTER TABLE papers ADD COLUMN journal TEXT", [])?;
+    }
+
+    Ok(())
 }

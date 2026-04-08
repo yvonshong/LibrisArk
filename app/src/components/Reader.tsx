@@ -31,7 +31,7 @@ export function Reader({ selectedPaper }: ReaderProps) {
                 <PanelResizeHandle className="w-1 bg-neutral-200 dark:bg-neutral-800 hover:bg-blue-500 transition-colors cursor-col-resize z-10" />
 
                 <Panel defaultSize="30" minSize="20" maxSize="50" className="h-full border-l border-neutral-200 dark:border-neutral-800">
-                    <ChatPanel />
+                    <ChatPanel selectedPaper={selectedPaper} />
                 </Panel>
             </PanelGroup>
         </div>

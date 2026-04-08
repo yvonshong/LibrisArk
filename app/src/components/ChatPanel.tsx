@@ -1,21 +1,73 @@
-import { Send, Bot, User } from "lucide-react";
-import { useState } from "react";
+import { Send, Bot, User, BookmarkPlus } from "lucide-react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Note, Paper } from "../types";
 
-export function ChatPanel() {
+interface ChatPanelProps {
+    selectedPaper: Paper | null;
+}
+
+export function ChatPanel({ selectedPaper }: ChatPanelProps) {
     const [messages, setMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([
         { role: 'assistant', content: 'Hello! I am your research assistant. How can I help you with this paper?' }
     ]);
     const [input, setInput] = useState("");
+    const [selectedTextContext, setSelectedTextContext] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
+    const [notes, setNotes] = useState<Note[]>([]);
 
-    const handleSend = () => {
+    useEffect(() => {
+        if (!selectedPaper) {
+            setNotes([]);
+            return;
+        }
+
+        invoke<Note[]>("get_notes", { paperId: selectedPaper.id })
+            .then(setNotes)
+            .catch((error) => console.error("Failed to load notes:", error));
+    }, [selectedPaper]);
+
+    const handleSend = async () => {
         if (!input.trim()) return;
-        setMessages([...messages, { role: 'user', content: input }]);
+        const question = input;
+        setMessages(prev => [...prev, { role: 'user', content: question }]);
         setInput("");
 
-        // Mock response
-        setTimeout(() => {
-            setMessages(prev => [...prev, { role: 'assistant', content: "I am a mock AI. I can't read the paper yet because the backend isn't connected, but I'm ready to help once we're live!" }]);
-        }, 1000);
+        if (!selectedPaper) {
+            setMessages(prev => [...prev, { role: 'assistant', content: "Please select a paper first, then ask your question." }]);
+            return;
+        }
+
+        try {
+            setIsLoading(true);
+            const answer = await invoke<string>("ask_paper", {
+                paperId: selectedPaper.id,
+                question,
+                selectedText: selectedTextContext || null
+            });
+            setMessages(prev => [...prev, { role: 'assistant', content: answer }]);
+        } catch (error) {
+            setMessages(prev => [...prev, { role: 'assistant', content: `Failed to answer from PDF: ${error}` }]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleSaveNote = async (content: string) => {
+        if (!selectedPaper) return;
+
+        try {
+            await invoke("save_note", {
+                paperId: selectedPaper.id,
+                content,
+                anchorText: selectedTextContext || null
+            });
+
+            const refreshed = await invoke<Note[]>("get_notes", { paperId: selectedPaper.id });
+            setNotes(refreshed);
+        } catch (error) {
+            console.error("Failed to save note:", error);
+        }
     };
 
     return (
@@ -35,9 +87,27 @@ export function ChatPanel() {
                                 : 'bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700'
                             }`}>
                             {msg.content}
+                            {msg.role === 'assistant' && selectedPaper && (
+                                <button
+                                    onClick={() => handleSaveNote(msg.content)}
+                                    className="mt-2 flex items-center gap-1 text-xs text-neutral-500 hover:text-blue-600"
+                                >
+                                    <BookmarkPlus size={12} />
+                                    Save as note
+                                </button>
+                            )}
                         </div>
                     </div>
                 ))}
+            </div>
+
+            <div className="px-3 pb-2">
+                <input
+                    className="w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Optional selected text/context..."
+                    value={selectedTextContext}
+                    onChange={(e) => setSelectedTextContext(e.target.value)}
+                />
             </div>
 
             <div className="p-3 border-t border-neutral-200 dark:border-neutral-800">
@@ -47,16 +117,28 @@ export function ChatPanel() {
                         placeholder="Ask a question..."
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                        onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSend()}
                     />
                     <button
                         onClick={handleSend}
-                        className="absolute right-2 top-2 p-1 text-neutral-400 hover:text-blue-600 transition-colors"
+                        disabled={isLoading}
+                        className="absolute right-2 top-2 p-1 text-neutral-400 hover:text-blue-600 transition-colors disabled:opacity-50"
                     >
                         <Send size={16} />
                     </button>
                 </div>
             </div>
+
+            {selectedPaper && notes.length > 0 && (
+                <div className="border-t border-neutral-200 dark:border-neutral-800 p-3 max-h-40 overflow-auto space-y-2">
+                    <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">Saved Notes</p>
+                    {notes.slice(0, 6).map(note => (
+                        <div key={note.id} className="text-xs text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-800 rounded p-2 border border-neutral-200 dark:border-neutral-700">
+                            {note.content}
+                        </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }

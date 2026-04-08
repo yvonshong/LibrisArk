@@ -3,14 +3,18 @@ mod db;
 mod watcher;
 mod commands;
 mod scan;
+mod metadata;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
 use notify::RecommendedWatcher;
 
+mod onedrive;
+
 pub struct AppState {
     pub db: Mutex<Connection>,
     pub watcher: Mutex<Option<RecommendedWatcher>>,
+    pub onedrive: onedrive::OneDriveClient,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -52,11 +56,34 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 watcher: Mutex::new(watcher),
+                onedrive: onedrive::OneDriveClient::new(),
             });
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::set_library_path, commands::get_library_path, commands::get_papers])
+        .invoke_handler(tauri::generate_handler![
+            commands::set_library_path, 
+            commands::get_library_path, 
+            commands::rescan_library,
+            commands::enrich_metadata,
+            commands::get_papers,
+            commands::get_papers_filtered,
+            commands::get_virtual_facets,
+            commands::preview_rename,
+            commands::apply_rename,
+            commands::ask_paper,
+            commands::save_note,
+            commands::get_notes,
+            commands::onedrive_login,
+            commands::onedrive_callback,
+            commands::set_onedrive_client_id,
+            commands::get_onedrive_client_id,
+            commands::set_onedrive_client_secret,
+            commands::get_onedrive_client_secret,
+            commands::set_onedrive_sync_folder,
+            commands::get_onedrive_sync_folder,
+            commands::sync_onedrive
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
