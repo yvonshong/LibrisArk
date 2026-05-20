@@ -8,6 +8,7 @@ pub struct MetadataCandidate {
     pub year: Option<i32>,
     pub abstract_text: Option<String>,
     pub journal: Option<String>,
+    pub authors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,8 @@ struct CrossrefMessage {
     #[serde(rename = "published-online")]
     published_online: Option<CrossrefDateParts>,
     issued: Option<CrossrefDateParts>,
+    #[serde(default)]
+    author: Vec<CrossrefAuthor>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -49,6 +52,15 @@ struct CrossrefItem {
     #[serde(rename = "published-online")]
     published_online: Option<CrossrefDateParts>,
     issued: Option<CrossrefDateParts>,
+    #[serde(default)]
+    author: Vec<CrossrefAuthor>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct CrossrefAuthor {
+    given: Option<String>,
+    family: Option<String>,
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -125,6 +137,7 @@ fn message_to_candidate(message: &CrossrefMessage) -> MetadataCandidate {
             .abstract_text
             .as_ref()
             .map(|a| strip_html_tags(a)),
+        authors: extract_authors(&message.author),
     }
 }
 
@@ -141,7 +154,24 @@ fn item_to_candidate(item: CrossrefItem) -> MetadataCandidate {
         ),
         journal: item.container_title.first().cloned(),
         abstract_text: item.abstract_text.as_ref().map(|a| strip_html_tags(a)),
+        authors: extract_authors(&item.author),
     }
+}
+
+fn extract_authors(authors: &[CrossrefAuthor]) -> Vec<String> {
+    authors
+        .iter()
+        .map(|a| {
+            if let Some(ref name) = a.name {
+                name.clone()
+            } else {
+                let given = a.given.as_deref().unwrap_or("");
+                let family = a.family.as_deref().unwrap_or("");
+                format!("{} {}", given, family).trim().to_string()
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn extract_year(date_parts: Option<&CrossrefDateParts>) -> Option<i32> {

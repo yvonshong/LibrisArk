@@ -22,6 +22,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
+keyring = "2.1"
 serde_json = "1"
 rusqlite = { version = "0.30.0", features = ["bundled"] }
 notify = { version = "6.0.0", features = ["serde"] }

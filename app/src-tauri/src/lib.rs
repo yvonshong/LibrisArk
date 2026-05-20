@@ -4,6 +4,7 @@ mod watcher;
 mod commands;
 mod scan;
 mod metadata;
+mod ai;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
@@ -82,7 +83,13 @@ pub fn run() {
             commands::get_onedrive_client_secret,
             commands::set_onedrive_sync_folder,
             commands::get_onedrive_sync_folder,
-            commands::sync_onedrive
+            commands::sync_onedrive,
+            commands::save_ai_key,
+            commands::get_ai_key_exists,
+            commands::delete_ai_key,
+            commands::set_app_setting,
+            commands::get_app_setting,
+            commands::generate_ai_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

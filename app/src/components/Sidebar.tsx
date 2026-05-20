@@ -2,6 +2,7 @@ import { Library, Folder, Tag, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LibraryFilter, VirtualFacets } from "../types";
+import { listen } from "@tauri-apps/api/event";
 
 interface SidebarProps {
     currentView: "library" | "settings";
@@ -13,11 +14,23 @@ interface SidebarProps {
 export function Sidebar({ currentView, onViewChange, filter, onFilterChange }: SidebarProps) {
     const [facets, setFacets] = useState<VirtualFacets>({ years: [], authors: [], tags: [] });
 
-    useEffect(() => {
-        if (currentView !== "library") return;
+    const fetchFacets = () => {
         invoke<VirtualFacets>("get_virtual_facets")
             .then(setFacets)
             .catch((error) => console.error("Failed to load virtual facets:", error));
+    };
+
+    useEffect(() => {
+        if (currentView !== "library") return;
+        fetchFacets();
+
+        const unlistenPromise = listen("library-update", () => {
+            fetchFacets();
+        });
+
+        return () => {
+            unlistenPromise.then(unlisten => unlisten());
+        };
     }, [currentView]);
 
     return (

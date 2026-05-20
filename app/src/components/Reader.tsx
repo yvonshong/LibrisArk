@@ -2,22 +2,51 @@ import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "reac
 import { ChatPanel } from "./ChatPanel";
 import { Paper } from "../types";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useState } from "react";
+import { Document, Page, pdfjs } from "react-pdf";
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
+
+// Configure PDF.js worker to point to CDN (for ease of setup without a bundler headache in Vite)
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 interface ReaderProps {
     selectedPaper: Paper | null;
 }
 
 export function Reader({ selectedPaper }: ReaderProps) {
+    const [numPages, setNumPages] = useState<number | null>(null);
+    const [_pageNumber, _setPageNumber] = useState(1);
+
+    function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
+        setNumPages(numPages);
+        _setPageNumber(1);
+    }
+
     return (
-        <div className="h-full w-full bg-neutral-100 dark:bg-neutral-950">
+        <div className="h-full w-full bg-neutral-100 dark:bg-neutral-950 flex">
             <PanelGroup orientation="horizontal" className="h-full w-full">
-                <Panel defaultSize="70" minSize="50" className="h-full">
+                <Panel defaultSize="70" minSize="50" className="h-full relative overflow-y-auto">
                     {selectedPaper ? (
-                        <iframe
-                            src={convertFileSrc(selectedPaper.path)}
-                            className="w-full h-full border-none"
-                            title="PDF Viewer"
-                        />
+                        <div className="w-full flex justify-center py-8">
+                            <Document
+                                file={convertFileSrc(selectedPaper.path)}
+                                onLoadSuccess={onDocumentLoadSuccess}
+                                className="shadow-lg flex flex-col gap-4"
+                                loading={<div className="p-8 text-neutral-500">Loading PDF...</div>}
+                            >
+                                {Array.from(new Array(numPages || 0), (_, index) => (
+                                    <Page
+                                        key={`page_${index + 1}`}
+                                        pageNumber={index + 1}
+                                        renderAnnotationLayer
+                                        renderTextLayer
+                                        width={800} // A decent readable width
+                                        className="bg-white"
+                                    />
+                                ))}
+                            </Document>
+                        </div>
                     ) : (
                         <div className="h-full flex items-center justify-center text-neutral-400">
                             <div className="text-center">

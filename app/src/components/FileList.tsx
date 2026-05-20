@@ -43,17 +43,23 @@ export function FileList({ onSelectPaper, selectedPaperId, filter }: FileListPro
     useEffect(() => {
         fetchPapers();
 
-        const unlistenPromise = listen("library-update", async (event) => {
+        let debounceTimeout: ReturnType<typeof setTimeout>;
+
+        const unlistenPromise = listen("library-update", (event) => {
             console.log("Library updated event:", event);
-            try {
-                await invoke("rescan_library");
-            } catch (error) {
-                console.error("Failed to rescan library:", error);
-            }
-            fetchPapers();
+            clearTimeout(debounceTimeout);
+            debounceTimeout = setTimeout(async () => {
+                try {
+                    await invoke("rescan_library");
+                } catch (error) {
+                    console.error("Failed to rescan library:", error);
+                }
+                fetchPapers();
+            }, 1000); // 1s debounce
         });
 
         return () => {
+            clearTimeout(debounceTimeout);
             unlistenPromise.then(unlisten => unlisten());
         };
     }, [filter.kind, filter.value, searchTerm]);
@@ -212,15 +218,28 @@ export function FileList({ onSelectPaper, selectedPaperId, filter }: FileListPro
                                             ? "text-blue-700 dark:text-blue-300"
                                             : "text-neutral-900 dark:text-neutral-100 group-hover:text-blue-600 dark:group-hover:text-blue-400"
                                     )}>
-                                        {paper.title || paper.path.split('/').pop()}
+                                        {paper.title || paper.path.split('/').pop()?.split('\\').pop()}
                                     </h3>
-                                    <p className="text-sm text-neutral-500 mt-1 truncate">
+                                    {paper.oneSentenceSummary && (
+                                        <p className="text-xs text-neutral-600 dark:text-neutral-400 italic mt-0.5 line-clamp-2">
+                                            {paper.oneSentenceSummary}
+                                        </p>
+                                    )}
+                                    <p className="text-sm text-neutral-500 mt-0.5 truncate">
                                         {paper.path}
                                     </p>
-                                    <p className="text-xs text-neutral-500 mt-1 truncate">
-                                        {paper.year ? `${paper.year}` : "Year N/A"}
-                                        {paper.doi ? ` • DOI: ${paper.doi}` : " • DOI N/A"}
-                                    </p>
+                                    <div className="flex flex-wrap gap-1 mt-1.5">
+                                        {paper.year && (
+                                            <span className="text-[10px] bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 px-1.5 py-0.5 rounded">
+                                                {paper.year}
+                                            </span>
+                                        )}
+                                        {paper.tags && paper.tags.map(tag => (
+                                            <span key={tag} className="text-[10px] bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded border border-blue-100 dark:border-blue-900/50">
+                                                {tag}
+                                            </span>
+                                        ))}
+                                    </div>
                                 </div>
                             </div>
                         </div>

@@ -4,6 +4,9 @@ export interface Paper {
     path: string;
     year: number | null;
     doi: string | null;
+    oneSentenceSummary: string | null;
+    structuredSummary: string | null;
+    tags: string[];
 }
 
 export type LibraryFilterKind = "all" | "year" | "author" | "tag";

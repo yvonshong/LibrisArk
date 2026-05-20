@@ -1,8 +1,8 @@
-use tauri::{AppHandle, State};
-use tauri::Emitter;
+use tauri::{AppHandle, State, Emitter, Manager};
 use crate::watcher;
 use crate::scan;
 use crate::metadata;
+use crate::ai;
 use crate::AppState;
 use rusqlite::params;
 
@@ -33,20 +33,65 @@ pub fn set_library_path(app_handle: AppHandle, state: State<'_, AppState>, path:
     // The previous lock on `db` was dropped? No, `conn` is a MutexGuard?
     // Wait, state.db is Mutex<Connection>. `conn` is MutexGuard.
     // We still have `conn`.
-    scan::scan_directory(std::path::Path::new(&path), &conn).map_err(|e| e.to_string())?;
+    let new_paper_ids = scan::scan_directory(std::path::Path::new(&path), &conn).map_err(|e| e.to_string())?;
+
+    let auto_summarize = {
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = 'ai_auto_summarize'").map_err(|e| e.to_string())?;
+        match stmt.query_row([], |r| r.get::<_, String>(0)) {
+            Ok(val) => val == "true",
+            Err(_) => false,
+        }
+    };
+
+    if auto_summarize {
+        for paper_id in new_paper_ids {
+            let app_handle_clone = app_handle.clone();
+            tokio::spawn(async move {
+                let app_handle_inner = app_handle_clone.clone();
+                let state = app_handle_clone.state::<AppState>();
+                if let Err(e) = generate_ai_summary_internal(&state, app_handle_inner, paper_id.clone()).await {
+                    eprintln!("Failed to auto-summarize paper {}: {}", paper_id, e);
+                }
+            });
+        }
+    }
+
     let _ = app_handle.emit("library-update", "rescan-complete");
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn rescan_library(state: State<'_, AppState>) -> Result<(), String> {
+pub fn rescan_library(state: State<'_, AppState>, app_handle: AppHandle) -> Result<(), String> {
     let Some(path) = get_library_path(state.clone())? else {
         return Err("Library path not configured".to_string());
     };
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    scan::scan_directory(std::path::Path::new(&path), &conn).map_err(|e| e.to_string())?;
+    let new_paper_ids = scan::scan_directory(std::path::Path::new(&path), &conn).map_err(|e| e.to_string())?;
+
+    let auto_summarize = {
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = 'ai_auto_summarize'").map_err(|e| e.to_string())?;
+        match stmt.query_row([], |r| r.get::<_, String>(0)) {
+            Ok(val) => val == "true",
+            Err(_) => false,
+        }
+    };
+
+    if auto_summarize {
+        for paper_id in new_paper_ids {
+            let app_handle_clone = app_handle.clone();
+            tokio::spawn(async move {
+                let app_handle_inner = app_handle_clone.clone();
+                let state = app_handle_clone.state::<AppState>();
+                if let Err(e) = generate_ai_summary_internal(&state, app_handle_inner, paper_id.clone()).await {
+                    eprintln!("Failed to auto-summarize paper {}: {}", paper_id, e);
+                }
+            });
+        }
+    }
+
+    let _ = app_handle.emit("library-update", "rescan-complete");
 
     Ok(())
 }
@@ -73,6 +118,9 @@ pub struct Paper {
     pub path: String,
     pub year: Option<i32>,
     pub doi: Option<String>,
+    pub one_sentence_summary: Option<String>,
+    pub structured_summary: Option<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -113,13 +161,34 @@ pub fn get_papers_filtered(
     let kind = filter_kind.unwrap_or_else(|| "all".to_string());
     let value = filter_value.unwrap_or_default();
 
+    let library_path = get_library_path_internal(&conn)?.unwrap_or_default();
+    let map_paper_closure = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Paper> {
+        let rel_path: String = row.get(2)?;
+        let abs_path = if std::path::Path::new(&rel_path).is_absolute() {
+            rel_path
+        } else {
+            std::path::Path::new(&library_path).join(&rel_path).to_string_lossy().to_string()
+        };
+
+        Ok(Paper {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            path: abs_path,
+            year: row.get(3)?,
+            doi: row.get(4)?,
+            one_sentence_summary: row.get(5)?,
+            structured_summary: row.get(6)?,
+            tags: Vec::new(),
+        })
+    };
+
     match kind.as_str() {
         "year" if !value.is_empty() => {
             if let Some(pattern) = search_pattern {
                 let year: i32 = value.parse().map_err(|_| "Invalid year filter".to_string())?;
                 let mut stmt = conn
                     .prepare(
-                        "SELECT id, title, path, publish_year, doi
+                        "SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary
                          FROM papers
                          WHERE publish_year = ?1
                            AND (title LIKE ?2 OR path LIKE ?2)
@@ -127,7 +196,7 @@ pub fn get_papers_filtered(
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![year, pattern], map_paper)
+                    .query_map(params![year, pattern], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
@@ -136,14 +205,14 @@ pub fn get_papers_filtered(
                 let year: i32 = value.parse().map_err(|_| "Invalid year filter".to_string())?;
                 let mut stmt = conn
                     .prepare(
-                        "SELECT id, title, path, publish_year, doi
+                        "SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary
                          FROM papers
                          WHERE publish_year = ?1
                          ORDER BY created_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![year], map_paper)
+                    .query_map(params![year], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
@@ -154,7 +223,7 @@ pub fn get_papers_filtered(
             if let Some(pattern) = search_pattern {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi
+                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi, p.one_sentence_summary, p.structured_summary
                          FROM papers p
                          WHERE EXISTS (
                            SELECT 1
@@ -167,7 +236,7 @@ pub fn get_papers_filtered(
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![value, pattern], map_paper)
+                    .query_map(params![value, pattern], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
@@ -175,7 +244,7 @@ pub fn get_papers_filtered(
             } else {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi
+                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi, p.one_sentence_summary, p.structured_summary
                          FROM papers p
                          WHERE EXISTS (
                            SELECT 1
@@ -187,7 +256,7 @@ pub fn get_papers_filtered(
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![value], map_paper)
+                    .query_map(params![value], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
@@ -198,7 +267,7 @@ pub fn get_papers_filtered(
             if let Some(pattern) = search_pattern {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi
+                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi, p.one_sentence_summary, p.structured_summary
                          FROM papers p
                          WHERE EXISTS (
                            SELECT 1
@@ -211,7 +280,7 @@ pub fn get_papers_filtered(
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![value, pattern], map_paper)
+                    .query_map(params![value, pattern], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
@@ -219,7 +288,7 @@ pub fn get_papers_filtered(
             } else {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi
+                        "SELECT p.id, p.title, p.path, p.publish_year, p.doi, p.one_sentence_summary, p.structured_summary
                          FROM papers p
                          WHERE EXISTS (
                            SELECT 1
@@ -231,7 +300,7 @@ pub fn get_papers_filtered(
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![value], map_paper)
+                    .query_map(params![value], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
@@ -242,26 +311,53 @@ pub fn get_papers_filtered(
             if let Some(pattern) = search_pattern {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT id, title, path, publish_year, doi
+                        "SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary
                          FROM papers
                          WHERE title LIKE ?1 OR path LIKE ?1
                          ORDER BY created_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
                 let iter = stmt
-                    .query_map(params![pattern], map_paper)
+                    .query_map(params![pattern], map_paper_closure)
                     .map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
                 }
             } else {
                 let mut stmt = conn
-                    .prepare("SELECT id, title, path, publish_year, doi FROM papers ORDER BY created_at DESC")
+                    .prepare("SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary FROM papers ORDER BY created_at DESC")
                     .map_err(|e| e.to_string())?;
-                let iter = stmt.query_map([], map_paper).map_err(|e| e.to_string())?;
+                let iter = stmt.query_map([], map_paper_closure).map_err(|e| e.to_string())?;
                 for p in iter {
                     papers.push(p.map_err(|e| e.to_string())?);
                 }
+            }
+        }
+    }
+
+    if !papers.is_empty() {
+        let paper_ids: Vec<String> = papers.iter().map(|p| format!("'{}'", p.id.replace("'", "''"))).collect();
+        let query_str = format!(
+            "SELECT pt.paper_id, t.name
+             FROM paper_tags pt
+             JOIN tags t ON t.id = pt.tag_id
+             WHERE pt.paper_id IN ({})",
+            paper_ids.join(",")
+        );
+        let mut tag_stmt = conn.prepare(&query_str).map_err(|e| e.to_string())?;
+        let mut tag_rows = tag_stmt.query([]).map_err(|e| e.to_string())?;
+
+        use std::collections::HashMap;
+        let mut paper_tags_map: HashMap<String, Vec<String>> = HashMap::new();
+        while let Some(row) = tag_rows.next().map_err(|e| e.to_string())? {
+            let paper_id: String = row.get(0).map_err(|e| e.to_string())?;
+            let tag_name: String = row.get(1).map_err(|e| e.to_string())?;
+            paper_tags_map.entry(paper_id).or_default().push(tag_name);
+        }
+
+        for paper in &mut papers {
+            if let Some(tags) = paper_tags_map.remove(&paper.id) {
+                paper.tags = tags;
             }
         }
     }
@@ -354,15 +450,7 @@ pub fn get_virtual_facets(state: State<'_, AppState>) -> Result<VirtualFacets, S
     Ok(VirtualFacets { years, authors, tags })
 }
 
-fn map_paper(row: &rusqlite::Row<'_>) -> rusqlite::Result<Paper> {
-    Ok(Paper {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        path: row.get(2)?,
-        year: row.get(3)?,
-        doi: row.get(4)?,
-    })
-}
+
 
 #[derive(Debug)]
 struct MetadataJob {
@@ -439,6 +527,28 @@ pub async fn enrich_metadata(state: State<'_, AppState>) -> Result<u32, String> 
         if changed > 0 {
             updated_count += 1;
         }
+
+        // Handle authors insertion
+        for author_name in candidate.authors {
+            // Insert author if not exists
+            conn.execute(
+                "INSERT OR IGNORE INTO authors (name) VALUES (?1)",
+                params![&author_name],
+            ).map_err(|e| e.to_string())?;
+
+            // Retrieve author id
+            let author_id: i64 = conn.query_row(
+                "SELECT id FROM authors WHERE name = ?1",
+                params![&author_name],
+                |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
+
+            // Associate with paper
+            conn.execute(
+                "INSERT OR IGNORE INTO paper_authors (paper_id, author_id) VALUES (?1, ?2)",
+                params![&job.id, author_id],
+            ).map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(updated_count)
@@ -461,6 +571,7 @@ pub fn preview_rename(
 ) -> Result<Vec<RenamePreview>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut previews = Vec::new();
+    let library_path = get_library_path_internal(&conn)?.unwrap_or_default();
 
     for paper_id in paper_ids {
         let mut stmt = conn
@@ -472,7 +583,7 @@ pub fn preview_rename(
                          WHERE pa.paper_id = p.id
                          ORDER BY a.id
                          LIMIT 1) AS first_author
-                 FROM papers p WHERE p.id = ?1",
+                  FROM papers p WHERE p.id = ?1",
             )
             .map_err(|e| e.to_string())?;
 
@@ -491,6 +602,12 @@ pub fn preview_rename(
             continue;
         };
 
+        let abs_old_path = if std::path::Path::new(&old_path).is_absolute() {
+            old_path.clone()
+        } else {
+            std::path::Path::new(&library_path).join(&old_path).to_string_lossy().to_string()
+        };
+
         let rendered_name = render_template(
             &template,
             author.as_deref().unwrap_or("Unknown"),
@@ -500,17 +617,17 @@ pub fn preview_rename(
         );
 
         let safe_name = ensure_pdf_extension(sanitize_filename(rendered_name));
-        let parent = std::path::Path::new(&old_path).parent();
+        let parent = std::path::Path::new(&abs_old_path).parent();
         let Some(parent_dir) = parent else {
             continue;
         };
-        let new_path = parent_dir.join(&safe_name).to_string_lossy().to_string();
+        let abs_new_path = parent_dir.join(&safe_name).to_string_lossy().to_string();
 
         previews.push(RenamePreview {
             id,
-            old_path,
+            old_path: abs_old_path,
             new_name: safe_name,
-            new_path,
+            new_path: abs_new_path,
         });
     }
 
@@ -525,6 +642,7 @@ pub fn apply_rename(
 ) -> Result<u32, String> {
     let previews = preview_rename(state.clone(), paper_ids, template)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let library_path = get_library_path_internal(&conn)?.unwrap_or_default();
     let mut renamed = 0u32;
 
     for preview in previews {
@@ -535,9 +653,16 @@ pub fn apply_rename(
         let resolved_target = resolve_rename_conflict(&preview.new_path);
 
         std::fs::rename(&preview.old_path, &resolved_target).map_err(|e| e.to_string())?;
+        
+        let new_rel_path = std::path::Path::new(&resolved_target)
+            .strip_prefix(&library_path)
+            .unwrap_or(std::path::Path::new(&resolved_target))
+            .to_string_lossy()
+            .to_string();
+
         conn.execute(
             "UPDATE papers SET path = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-            [&resolved_target, &preview.id],
+            params![new_rel_path, preview.id],
         )
         .map_err(|e| e.to_string())?;
 
@@ -669,7 +794,7 @@ pub fn get_notes(state: State<'_, AppState>, paper_id: String) -> Result<Vec<Not
 }
 
 #[tauri::command]
-pub fn ask_paper(
+pub async fn ask_paper(
     state: State<'_, AppState>,
     paper_id: String,
     question: String,
@@ -679,7 +804,7 @@ pub fn ask_paper(
         return Ok("Please ask a non-empty question.".to_string());
     }
 
-    let (path, title) = {
+    let (path, _title) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare("SELECT path, title FROM papers WHERE id = ?1")
@@ -688,9 +813,14 @@ pub fn ask_paper(
             .map_err(|e| e.to_string())?
     };
 
+    let abs_path = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        resolve_absolute_path(&conn, &path)?
+    };
+
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        ensure_chunks_for_paper(&conn, &paper_id, &path)?;
+        ensure_chunks_for_paper(&conn, &paper_id, &abs_path)?;
     }
 
     let query = if let Some(sel) = selected_text.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -708,16 +838,29 @@ pub fn ask_paper(
         return Ok("I could not find relevant passages in this PDF yet. Try using more specific keywords from the paper.".to_string());
     }
 
-    let mut answer = String::new();
-    answer.push_str(&format!(
-        "Based on {} I found the following relevant passages:\n\n",
-        title.unwrap_or_else(|| "the selected paper".to_string())
-    ));
-    for (idx, snippet) in snippets.iter().enumerate() {
-        answer.push_str(&format!("[{}] {}\n\n", idx + 1, snippet));
-    }
-    answer.push_str("If you want, I can refine this to a concise summary or explain one selected passage.");
+    let ai_settings = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        get_ai_settings(&conn, false)?
+    };
 
+    let system_prompt = "You are LibrisArk, an advanced literature research assistant. \
+                         Answer the user's question about the research paper based on the provided relevant passages and any selected text. \
+                         Be scientific, clear, and comprehensive. Quote relevant equations or terms when appropriate. \
+                         If the answer cannot be deduced from the provided passages, state that explicitly, but offer a helpful response based on your general scientific training.";
+
+    let mut user_prompt = String::new();
+    if let Some(sel) = selected_text.as_ref().filter(|s| !s.trim().is_empty()) {
+        user_prompt.push_str(&format!("Selected Text Context:\n\"\"\"\n{}\n\"\"\"\n\n", sel));
+    }
+    
+    user_prompt.push_str("Relevant passages from the paper:\n");
+    for (idx, snippet) in snippets.iter().enumerate() {
+        user_prompt.push_str(&format!("--- Passage [{}] ---\n{}\n\n", idx + 1, snippet));
+    }
+    
+    user_prompt.push_str(&format!("Question: {}\n\nAnswer:", question));
+
+    let answer = ai::call_llm(&ai_settings, system_prompt, &user_prompt, false).await?;
     Ok(answer)
 }
 
@@ -990,6 +1133,10 @@ pub async fn sync_onedrive(state: State<'_, AppState>) -> Result<(), String> {
 
 fn get_setting(state: &State<'_, AppState>, key: &str) -> Result<Option<String>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    get_setting_internal(&conn, key)
+}
+
+fn get_setting_internal(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, String> {
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1").map_err(|e| e.to_string())?;
     let mut rows = stmt.query([key]).map_err(|e| e.to_string())?;
 
@@ -998,4 +1145,216 @@ fn get_setting(state: &State<'_, AppState>, key: &str) -> Result<Option<String>,
     } else {
         Ok(None)
     }
+}
+
+fn get_library_path_internal(conn: &rusqlite::Connection) -> Result<Option<String>, String> {
+    get_setting_internal(conn, "library_path")
+}
+
+fn resolve_absolute_path(conn: &rusqlite::Connection, db_path: &str) -> Result<String, String> {
+    if std::path::Path::new(db_path).is_absolute() {
+        return Ok(db_path.to_string());
+    }
+
+    let lib_path = get_library_path_internal(conn)?
+        .ok_or_else(|| "Library path not configured".to_string())?;
+    let abs_path = std::path::Path::new(&lib_path).join(db_path);
+    Ok(abs_path.to_string_lossy().to_string())
+}
+
+fn get_ai_settings(conn: &rusqlite::Connection, for_summary: bool) -> Result<ai::AISettings, String> {
+    let mut stmt = conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'ai_%'").map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    
+    let mut provider = String::new();
+    let mut copilot_model = String::new();
+    let mut summary_model = String::new();
+    
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let key: String = row.get(0).map_err(|e| e.to_string())?;
+        let value: String = row.get(1).map_err(|e| e.to_string())?;
+        match key.as_str() {
+            "ai_provider" => provider = value,
+            "ai_copilot_model" => copilot_model = value,
+            "ai_summary_model" => summary_model = value,
+            _ => {}
+        }
+    }
+    
+    if provider.is_empty() {
+        return Err("AI Provider is not configured. Please open Settings and configure it first.".to_string());
+    }
+    
+    let model = if for_summary {
+        if summary_model.is_empty() {
+            match provider.as_str() {
+                "openai" => "gpt-4o-mini".to_string(),
+                "anthropic" => "claude-3-5-haiku-latest".to_string(),
+                "gemini" => "gemini-1.5-flash".to_string(),
+                _ => return Err("Model not configured.".to_string()),
+            }
+        } else {
+            summary_model
+        }
+    } else {
+        if copilot_model.is_empty() {
+            match provider.as_str() {
+                "openai" => "gpt-4o".to_string(),
+                "anthropic" => "claude-3-5-sonnet-latest".to_string(),
+                "gemini" => "gemini-1.5-pro".to_string(),
+                _ => return Err("Model not configured.".to_string()),
+            }
+        } else {
+            copilot_model
+        }
+    };
+    
+    let api_key = get_ai_key_internal(&provider)?
+        .ok_or_else(|| format!("No API key found in keychain for provider '{}'", provider))?;
+        
+    Ok(ai::AISettings {
+        provider,
+        model,
+        api_key,
+    })
+}
+
+pub fn get_ai_key_internal(provider: &str) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new("librisark", provider).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(pw) => Ok(Some(pw)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn save_ai_key(provider: String, key: String) -> Result<(), String> {
+    if key.trim().is_empty() {
+        return delete_ai_key(provider);
+    }
+    let entry = keyring::Entry::new("librisark", &provider).map_err(|e| e.to_string())?;
+    entry.set_password(&key).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_ai_key_exists(provider: String) -> Result<bool, String> {
+    let entry = keyring::Entry::new("librisark", &provider).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn delete_ai_key(provider: String) -> Result<(), String> {
+    let entry = keyring::Entry::new("librisark", &provider).map_err(|e| e.to_string())?;
+    match entry.delete_password() {
+        Ok(_) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn set_app_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        [&key, &value],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_app_setting(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    get_setting(&state, &key)
+}
+
+#[tauri::command]
+pub async fn generate_ai_summary(state: State<'_, AppState>, app_handle: AppHandle, paper_id: String) -> Result<(), String> {
+    generate_ai_summary_internal(&state, app_handle, paper_id).await
+}
+
+pub async fn generate_ai_summary_internal(state: &AppState, app_handle: AppHandle, paper_id: String) -> Result<(), String> {
+    let (path, _title) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT path, title FROM papers WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+        stmt.query_row([&paper_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))
+            .map_err(|e| e.to_string())?
+    };
+
+    let abs_path = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        resolve_absolute_path(&conn, &path)?
+    };
+
+    if !std::path::Path::new(&abs_path).exists() {
+        return Err(format!("PDF file not found at: {}", abs_path));
+    }
+
+    let full_text = pdf_extract::extract_text(std::path::Path::new(&abs_path))
+        .map_err(|e| format!("Failed to extract PDF text: {}", e))?;
+    
+    let sample_len = std::cmp::min(full_text.len(), 8000);
+    if sample_len == 0 {
+        return Err("PDF file has no readable text".to_string());
+    }
+    let sample_text = &full_text[..sample_len];
+
+    let ai_settings = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        get_ai_settings(&conn, true)?
+    };
+
+    let system_prompt = "You are an expert scientific literature reviewer. \
+                         Analyze the extracted text from the paper and output a valid JSON object ONLY. \
+                         Do not include any surrounding markdown blocks (like ```json), introduction, or follow-up text. \
+                         The JSON object must have exactly these three fields: \
+                         1. \"one_sentence_summary\": A concise, single-sentence summary of the paper. \
+                         2. \"structured_summary\": A structured overview containing Background, Methodology, Results, and Conclusion. \
+                         3. \"tags\": A JSON array of 3 to 5 relevant scientific keywords or areas (e.g. [\"Machine Learning\", \"Optics\"]).";
+
+    let response = ai::call_llm(&ai_settings, system_prompt, sample_text, true).await?;
+    let clean_json = ai::extract_json_block(&response);
+
+    let summary_result: ai::AISummaryResult = serde_json::from_str(&clean_json)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Response was: {}", e, response))?;
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE papers SET one_sentence_summary = ?1, structured_summary = ?2 WHERE id = ?3",
+        params![summary_result.one_sentence_summary, summary_result.structured_summary, paper_id],
+    ).map_err(|e| e.to_string())?;
+
+    for tag in summary_result.tags {
+        let tag_name = tag.trim().to_lowercase();
+        if tag_name.is_empty() {
+            continue;
+        }
+
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+            [&tag_name],
+        ).map_err(|e| e.to_string())?;
+
+        let tag_id: i64 = conn.query_row(
+            "SELECT id FROM tags WHERE name = ?1",
+            [&tag_name],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_tags (paper_id, tag_id) VALUES (?1, ?2)",
+            params![paper_id, tag_id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    let _ = app_handle.emit("library-update", "ai-summary-complete");
+
+    Ok(())
 }

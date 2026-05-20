@@ -91,6 +91,7 @@ pub fn init<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
 
     ensure_papers_file_hash_column(&conn)?;
     ensure_papers_journal_column(&conn)?;
+    ensure_papers_new_columns(&conn)?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_papers_file_hash ON papers(file_hash)",
         [],
@@ -105,6 +106,41 @@ pub fn init<P: AsRef<Path>>(db_path: P) -> Result<Connection> {
     )?;
 
     Ok(conn)
+}
+
+fn ensure_papers_new_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(papers)")?;
+    let mut rows = stmt.query([])?;
+    let mut has_one_sentence = false;
+    let mut has_structured = false;
+    let mut has_file_size = false;
+    let mut has_modified_at = false;
+
+    while let Some(row) = rows.next()? {
+        let column_name: String = row.get(1)?;
+        match column_name.as_str() {
+            "one_sentence_summary" => has_one_sentence = true,
+            "structured_summary" => has_structured = true,
+            "file_size" => has_file_size = true,
+            "modified_at" => has_modified_at = true,
+            _ => {}
+        }
+    }
+
+    if !has_one_sentence {
+        conn.execute("ALTER TABLE papers ADD COLUMN one_sentence_summary TEXT", [])?;
+    }
+    if !has_structured {
+        conn.execute("ALTER TABLE papers ADD COLUMN structured_summary TEXT", [])?;
+    }
+    if !has_file_size {
+        conn.execute("ALTER TABLE papers ADD COLUMN file_size INTEGER", [])?;
+    }
+    if !has_modified_at {
+        conn.execute("ALTER TABLE papers ADD COLUMN modified_at INTEGER", [])?;
+    }
+
+    Ok(())
 }
 
 fn ensure_papers_file_hash_column(conn: &Connection) -> Result<()> {
