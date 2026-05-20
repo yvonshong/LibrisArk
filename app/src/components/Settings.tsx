@@ -170,27 +170,7 @@ export function Settings() {
                     </div>
 
                     <div className="space-y-4">
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium">Client ID</label>
-                            <input
-                                type="text"
-                                value={onedriveClientId}
-                                onChange={(e) => setOnedriveClientId(e.target.value)}
-                                className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent"
-                                placeholder="Azure Portal Application (client) ID"
-                            />
-                        </div>
-
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium">Client Secret (Required for Web App)</label>
-                            <input
-                                type="password"
-                                value={onedriveClientSecret}
-                                onChange={(e) => setOnedriveClientSecret(e.target.value)}
-                                className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent"
-                                placeholder="Azure Portal Client Secret"
-                            />
-                        </div>
+                        
                         <div className="space-y-2">
                             <label className="text-sm font-medium">OneDrive Sync Folder</label>
                             <input
@@ -203,7 +183,7 @@ export function Settings() {
                             <p className="text-xs text-neutral-500">The folder path in your OneDrive to sync with.</p>
                         </div>
 
-                        <p className="text-xs text-neutral-500">Register an app in Azure Portal and paste the details here.</p>
+                        
                     </div>
 
                     <div className="flex justify-end gap-2">
@@ -230,18 +210,37 @@ export function Settings() {
                                 try {
                                     await saveSettings(true); // Auto-save first
 
-                                    if (!onedriveClientId) {
-                                        alert("Please enter a Client ID first.");
-                                        return;
-                                    }
+                                    
 
                                     const url = await invoke<string>("onedrive_login");
                                     await openUrl(url);
-                                    // In a real app, we'd listen for a deep link or use a local server
-                                    const code = prompt("Please enter the code from the redirect URL:");
-                                    if (code) {
-                                        await invoke("onedrive_callback", { code });
-                                        alert("OneDrive connected!");
+                                    
+                                    const input = prompt("If your browser didn't automatically return you to the app, please paste the full URL or the 'code' here:");
+                                    if (input) {
+                                        let code = input.trim();
+                                        try {
+                                            if (input.includes("http")) {
+                                                const urlObj = new URL(input);
+                                                code = urlObj.searchParams.get("code") || code;
+                                            } else if (input.includes("code=")) {
+                                                const match = input.match(/code=([^&]+)/);
+                                                if (match?.[1]) {
+                                                    code = decodeURIComponent(match[1]);
+                                                }
+                                            } else {
+                                                // If they just pasted the code directly, it might be URL encoded
+                                                code = decodeURIComponent(code);
+                                            }
+                                        } catch(e) {
+                                            console.warn("Failed to parse URL", e);
+                                        }
+                                        
+                                        try {
+                                            await invoke("onedrive_callback", { code });
+                                            alert("OneDrive connected!");
+                                        } catch (e) {
+                                            alert("Failed to connect OneDrive: " + e);
+                                        }
                                     }
                                 } catch (e) {
                                     alert("Failed to connect OneDrive: " + e);

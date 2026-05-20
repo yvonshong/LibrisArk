@@ -3,10 +3,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
 
-const REDIRECT_URI: &str = "http://localhost:3003/callback";
-const AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
-const TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
-const SCOPES: &str = "files.readwrite offline_access user.read";
+const REDIRECT_URI: &str = "http://localhost";
+const AUTH_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
+const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+const SCOPES: &str = "Files.ReadWrite offline_access user.read";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OneDriveToken {
@@ -172,35 +172,44 @@ impl OneDriveClient {
     }
 
     pub async fn list_files(&self, access_token: &str, folder_path: &str) -> Result<Vec<OneDriveItem>, String> {
-        let url = if folder_path == "/" || folder_path.is_empty() {
+        let mut items = Vec::new();
+        let encoded_path = folder_path.split('/').map(|s| urlencoding::encode(s)).collect::<Vec<_>>().join("/");
+        
+        let mut url = if folder_path == "/" || folder_path.is_empty() {
             "https://graph.microsoft.com/v1.0/me/drive/root/children".to_string()
         } else {
-            format!("https://graph.microsoft.com/v1.0/me/drive/root:/{}:/children", folder_path)
+            format!("https://graph.microsoft.com/v1.0/me/drive/root:/{}:/children", encoded_path)
         };
 
-        let res = self.client
-            .get(url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        loop {
+            let res = self.client
+                .get(&url)
+                .bearer_auth(access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
 
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.map_err(|e| e.to_string())?;
-            return Err(format!("Microsoft Error ({}): {}", status, body));
-        }
+            let status = res.status();
+            if !status.is_success() {
+                if status.as_u16() == 404 {
+                    // Folder doesn't exist yet, just return empty list
+                    return Ok(items);
+                }
+                let body = res.text().await.map_err(|e| e.to_string())?;
+                return Err(format!("Microsoft Error ({}): {}", status, body));
+            }
 
-        let body: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-        println!("OneDrive: received JSON body with value length: {}", body["value"].as_array().map(|a| a.len()).unwrap_or(0));
-        let items: Vec<OneDriveItem> = serde_json::from_value(body["value"].clone())
-            .map_err(|e| format!("Failed to parse items: {}. Body: {:?}", e, body))?;
-        
-        for item in &items {
-            if item.folder.is_some() {
-                println!("OneDrive: Item '{}' is a folder", item.name);
-            } else if item.file.is_some() {
-                println!("OneDrive: Item '{}' is a file", item.name);
+            let body: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+            if let Some(value) = body.get("value").and_then(|v| v.as_array()) {
+                let page_items: Vec<OneDriveItem> = serde_json::from_value(body["value"].clone())
+                    .map_err(|e| format!("Failed to parse items: {}", e))?;
+                items.extend(page_items);
+            }
+
+            if let Some(next_link) = body.get("@odata.nextLink").and_then(|v| v.as_str()) {
+                url = next_link.to_string();
+            } else {
+                break;
             }
         }
 
@@ -208,21 +217,83 @@ impl OneDriveClient {
     }
 
     pub async fn upload_file(&self, access_token: &str, local_path: &std::path::Path, remote_path: &str) -> Result<(), String> {
-        let file_content = std::fs::read(local_path).map_err(|e| e.to_string())?;
-        let url = format!("https://graph.microsoft.com/v1.0/me/drive/root:/{}:/content", remote_path);
+        let file_size = std::fs::metadata(local_path).map_err(|e| e.to_string())?.len();
+        let encoded_path = remote_path.split('/').map(|s| urlencoding::encode(s)).collect::<Vec<_>>().join("/");
+        
+        if file_size <= 4 * 1024 * 1024 {
+            // Small file: single PUT
+            let file_content = std::fs::read(local_path).map_err(|e| e.to_string())?;
+            let url = format!("https://graph.microsoft.com/v1.0/me/drive/root:/{}:/content", encoded_path);
 
-        let res = self.client
-            .put(url)
-            .bearer_auth(access_token)
-            .body(file_content)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+            let res = self.client
+                .put(&url)
+                .bearer_auth(access_token)
+                .body(file_content)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
 
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.map_err(|e| e.to_string())?;
-            return Err(format!("Microsoft Error ({}): {}", status, body));
+            let status = res.status();
+            if !status.is_success() {
+                let body = res.text().await.map_err(|e| e.to_string())?;
+                return Err(format!("Microsoft Error ({}): {}", status, body));
+            }
+        } else {
+            // Large file: upload session
+            let create_session_url = format!("https://graph.microsoft.com/v1.0/me/drive/root:/{}:/createUploadSession", encoded_path);
+            let res = self.client
+                .post(&create_session_url)
+                .bearer_auth(access_token)
+                .json(&serde_json::json!({
+                    "item": {
+                        "@microsoft.graph.conflictBehavior": "replace"
+                    }
+                }))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+                
+            let status = res.status();
+            if !status.is_success() {
+                let body = res.text().await.map_err(|e| e.to_string())?;
+                return Err(format!("Microsoft Error ({}): {}", status, body));
+            }
+            
+            let body: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+            let upload_url = body["uploadUrl"].as_str().ok_or("Failed to get uploadUrl")?;
+            
+            let mut file = std::fs::File::open(local_path).map_err(|e| e.to_string())?;
+            let chunk_size = 320 * 1024 * 10; // 3.2 MB (must be multiple of 320 KB)
+            let mut buffer = vec![0; chunk_size];
+            let mut total_read = 0;
+            
+            use std::io::Read;
+            loop {
+                let bytes_read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+                if bytes_read == 0 {
+                    break;
+                }
+                
+                let chunk = &buffer[..bytes_read];
+                let content_range = format!("bytes {}-{}/{}", total_read, total_read + bytes_read - 1, file_size);
+                
+                let res = self.client
+                    .put(upload_url)
+                    .header("Content-Length", bytes_read.to_string())
+                    .header("Content-Range", content_range)
+                    .body(chunk.to_vec())
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    
+                let status = res.status();
+                if !status.is_success() && status.as_u16() != 202 && status.as_u16() != 201 {
+                    let body = res.text().await.map_err(|e| e.to_string())?;
+                    return Err(format!("Upload chunk failed ({}): {}", status, body));
+                }
+                
+                total_read += bytes_read;
+            }
         }
 
         Ok(())

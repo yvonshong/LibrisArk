@@ -987,15 +987,21 @@ fn split_text_into_chunks(text: &str, target_len: usize) -> Vec<String> {
     chunks
 }
 
+// Fallback generic client ID from Remotely Save (known working public client)
+// This is exactly the ID exported in remotely-save's code
+const DEFAULT_ONEDRIVE_CLIENT_ID: &str = "794d03ec-1008-4afd-aaf3-ae0380b015ac";
+
 #[tauri::command]
 pub async fn onedrive_login(state: State<'_, AppState>) -> Result<String, String> {
-    let client_id = get_setting(&state, "onedrive_client_id")?.ok_or("OneDrive Client ID not configured")?;
+    let client_id = get_setting(&state, "onedrive_client_id")?
+        .unwrap_or_else(|| DEFAULT_ONEDRIVE_CLIENT_ID.to_string());
     Ok(state.onedrive.get_auth_url(&client_id))
 }
 
 #[tauri::command]
 pub async fn onedrive_callback(state: State<'_, AppState>, code: String) -> Result<(), String> {
-    let client_id = get_setting(&state, "onedrive_client_id")?.ok_or("OneDrive Client ID not configured")?;
+    let client_id = get_setting(&state, "onedrive_client_id")?
+        .unwrap_or_else(|| DEFAULT_ONEDRIVE_CLIENT_ID.to_string());
     let client_secret = get_setting(&state, "onedrive_client_secret")?;
     state.onedrive.handle_callback(&client_id, client_secret.as_deref(), &code).await?;
     Ok(())
@@ -1050,7 +1056,7 @@ pub fn get_onedrive_sync_folder(state: State<'_, AppState>) -> Result<Option<Str
 pub async fn sync_onedrive(state: State<'_, AppState>) -> Result<(), String> {
     let library_path = get_library_path(state.clone())?.ok_or("Library path not configured")?;
     let sync_folder = get_onedrive_sync_folder(state.clone())?.ok_or("OneDrive sync folder not configured")?;
-    let client_id = get_onedrive_client_id(state.clone())?.ok_or("OneDrive Client ID not configured")?;
+    let client_id = get_onedrive_client_id(state.clone())?.unwrap_or_else(|| DEFAULT_ONEDRIVE_CLIENT_ID.to_string());
     let client_secret = get_onedrive_client_secret(state.clone())?;
 
     let access_token = state.onedrive.get_access_token(&client_id, client_secret.as_deref()).await?;
