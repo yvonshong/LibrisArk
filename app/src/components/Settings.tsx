@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Save, FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
 
 export function Settings() {
     const [libraryPath, setLibraryPath] = useState("");
@@ -120,8 +121,17 @@ export function Settings() {
     const handleSave = () => saveSettings(false);
 
     const handleBrowse = async () => {
-        // Placeholder for dialog integration
-        alert("Please manually paste your library path.");
+        try {
+            const selected = await open({
+                directory: true,
+                multiple: false,
+            });
+            if (selected) {
+                setLibraryPath(selected as string);
+            }
+        } catch (e) {
+            console.error("Failed to open dialog:", e);
+        }
     };
 
     return (
@@ -400,6 +410,9 @@ export function Settings() {
                                         >
                                             <option value="gemini-1.5-pro">gemini-1.5-pro</option>
                                             <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                                            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+                                            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
                                         </select>
                                     </div>
                                     <div className="space-y-2">
@@ -411,6 +424,9 @@ export function Settings() {
                                         >
                                             <option value="gemini-1.5-flash">gemini-1.5-flash</option>
                                             <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                                            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+                                            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
                                         </select>
                                     </div>
                                 </div>

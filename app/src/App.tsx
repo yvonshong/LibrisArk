@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 function App() {
-  const [currentView, setCurrentView] = useState<"library" | "settings">("library");
+  const [currentView, setCurrentView] = useState<"library" | "tags" | "search" | "settings">("library");
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>({ kind: "all", value: null });
 
@@ -35,41 +35,49 @@ function App() {
   }, [selectedPaper?.id]);
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-50 flex flex-col">
-      <PanelGroup orientation="horizontal" className="h-full w-full font-sans">
-        <Panel defaultSize="20" minSize="15" maxSize="30" className="h-full border-r border-neutral-200 dark:border-neutral-800">
-          <Sidebar
-            currentView={currentView}
-            onViewChange={setCurrentView}
-            filter={libraryFilter}
-            onFilterChange={setLibraryFilter}
-          />
-        </Panel>
+    <div className="h-screen w-screen overflow-hidden bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-50 flex">
+      <div className="h-full shrink-0 z-10">
+        <Sidebar
+          currentView={currentView}
+          onViewChange={(view) => {
+            setCurrentView(view);
+            if (view !== "settings") {
+              setLibraryFilter({ kind: "all", value: null });
+            }
+          }}
+        />
+      </div>
 
-        <PanelResizeHandle className="w-1 bg-transparent hover:bg-blue-500 transition-colors cursor-col-resize z-10 -ml-0.5 relative" />
-
-        {currentView === "library" ? (
-          <>
-            <Panel defaultSize="30" minSize="20" maxSize="40" className="h-full border-r border-neutral-200 dark:border-neutral-800">
-              <FileList
-                onSelectPaper={setSelectedPaper}
-                selectedPaperId={selectedPaper?.id}
-                filter={libraryFilter}
-              />
+      <div className="flex-1 min-w-0 h-full">
+        {/* @ts-ignore */}
+        <PanelGroup autoSaveId="librisark-layout-v5" orientation="horizontal" className="h-full w-full font-sans">
+          {currentView === "settings" ? (
+            <Panel id="settings-panel" defaultSize={100} className="h-full overflow-hidden">
+              <Settings />
             </Panel>
+          ) : (
+            <>
+              <Panel id="file-list-panel" defaultSize={30} minSize={15} collapsible={true} className="h-full border-r border-neutral-200 dark:border-neutral-800 overflow-hidden">
+                <FileList
+                  onSelectPaper={setSelectedPaper}
+                  selectedPaperId={selectedPaper?.id}
+                  filter={libraryFilter}
+                  onFilterChange={setLibraryFilter}
+                  currentView={currentView}
+                />
+              </Panel>
 
-            <PanelResizeHandle className="w-1 bg-transparent hover:bg-blue-500 transition-colors cursor-col-resize z-10 -ml-0.5 relative" />
+              <PanelResizeHandle className="w-2 bg-transparent hover:bg-blue-500/50 transition-colors cursor-col-resize z-10 -ml-1 relative flex items-center justify-center">
+                <div className="w-0.5 h-8 bg-neutral-300 dark:bg-neutral-700 rounded-full" />
+              </PanelResizeHandle>
 
-            <Panel defaultSize="50" minSize="30" className="h-full">
-              <Reader selectedPaper={selectedPaper} />
-            </Panel>
-          </>
-        ) : (
-          <Panel defaultSize="80" className="h-full">
-            <Settings />
-          </Panel>
-        )}
-      </PanelGroup>
+              <Panel id="reader-panel" defaultSize={70} minSize={20} className="h-full">
+                <Reader selectedPaper={selectedPaper} />
+              </Panel>
+            </>
+          )}
+        </PanelGroup>
+      </div>
     </div>
   );
 }

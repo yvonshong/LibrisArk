@@ -49,8 +49,8 @@ pub fn set_library_path(app_handle: AppHandle, state: State<'_, AppState>, path:
             tokio::spawn(async move {
                 let app_handle_inner = app_handle_clone.clone();
                 let state = app_handle_clone.state::<AppState>();
-                if let Err(e) = generate_ai_summary_internal(&state, app_handle_inner, paper_id.clone()).await {
-                    eprintln!("Failed to auto-summarize paper {}: {}", paper_id, e);
+                if let Err(e) = start_copilot_session_internal(&state, app_handle_inner, paper_id.clone()).await {
+                    eprintln!("Failed to start copilot for paper {}: {}", paper_id, e);
                 }
             });
         }
@@ -84,8 +84,8 @@ pub fn rescan_library(state: State<'_, AppState>, app_handle: AppHandle) -> Resu
             tokio::spawn(async move {
                 let app_handle_inner = app_handle_clone.clone();
                 let state = app_handle_clone.state::<AppState>();
-                if let Err(e) = generate_ai_summary_internal(&state, app_handle_inner, paper_id.clone()).await {
-                    eprintln!("Failed to auto-summarize paper {}: {}", paper_id, e);
+                if let Err(e) = start_copilot_session_internal(&state, app_handle_inner, paper_id.clone()).await {
+                    eprintln!("Failed to start copilot for paper {}: {}", paper_id, e);
                 }
             });
         }
@@ -191,7 +191,7 @@ pub fn get_papers_filtered(
                         "SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary
                          FROM papers
                          WHERE publish_year = ?1
-                           AND (title LIKE ?2 OR path LIKE ?2)
+                           AND (title LIKE ?2 OR path LIKE ?2 OR EXISTS (SELECT 1 FROM paper_chunks pc WHERE pc.paper_id = id AND pc.content LIKE ?2))
                          ORDER BY created_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
@@ -231,7 +231,7 @@ pub fn get_papers_filtered(
                            JOIN authors a ON a.id = pa.author_id
                            WHERE pa.paper_id = p.id AND a.name = ?1
                          )
-                         AND (p.title LIKE ?2 OR p.path LIKE ?2)
+                         AND (p.title LIKE ?2 OR p.path LIKE ?2 OR EXISTS (SELECT 1 FROM paper_chunks pc WHERE pc.paper_id = p.id AND pc.content LIKE ?2))
                          ORDER BY p.created_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
@@ -275,7 +275,7 @@ pub fn get_papers_filtered(
                            JOIN tags t ON t.id = pt.tag_id
                            WHERE pt.paper_id = p.id AND t.name = ?1
                          )
-                         AND (p.title LIKE ?2 OR p.path LIKE ?2)
+                         AND (p.title LIKE ?2 OR p.path LIKE ?2 OR EXISTS (SELECT 1 FROM paper_chunks pc WHERE pc.paper_id = p.id AND pc.content LIKE ?2))
                          ORDER BY p.created_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
@@ -313,7 +313,7 @@ pub fn get_papers_filtered(
                     .prepare(
                         "SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary
                          FROM papers
-                         WHERE title LIKE ?1 OR path LIKE ?1
+                         WHERE title LIKE ?1 OR path LIKE ?1 OR EXISTS (SELECT 1 FROM paper_chunks pc WHERE pc.paper_id = id AND pc.content LIKE ?1)
                          ORDER BY created_at DESC",
                     )
                     .map_err(|e| e.to_string())?;
@@ -554,6 +554,40 @@ pub async fn enrich_metadata(state: State<'_, AppState>) -> Result<u32, String> 
     Ok(updated_count)
 }
 
+#[tauri::command]
+pub fn delete_paper(state: State<'_, AppState>, paper_ids: Vec<String>) -> Result<u32, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let library_path = get_library_path_internal(&conn)?.unwrap_or_default();
+    let mut deleted = 0;
+
+    for paper_id in paper_ids {
+        let mut stmt = conn.prepare("SELECT path FROM papers WHERE id = ?1").map_err(|e| e.to_string())?;
+        let path_opt: Option<String> = stmt.query_row([&paper_id], |row| row.get(0)).ok();
+
+        // Delete from DB
+        conn.execute("DELETE FROM notes WHERE paper_id = ?1", params![&paper_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM paper_authors WHERE paper_id = ?1", params![&paper_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM paper_tags WHERE paper_id = ?1", params![&paper_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM papers WHERE id = ?1", params![&paper_id]).map_err(|e| e.to_string())?;
+
+        // Delete physical file
+        if let Some(rel_path) = path_opt {
+            let abs_path = if std::path::Path::new(&rel_path).is_absolute() {
+                std::path::PathBuf::from(rel_path)
+            } else {
+                std::path::Path::new(&library_path).join(&rel_path)
+            };
+            
+            if abs_path.exists() {
+                let _ = std::fs::remove_file(abs_path);
+            }
+        }
+        deleted += 1;
+    }
+
+    Ok(deleted)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenamePreview {
@@ -770,7 +804,7 @@ pub fn get_notes(state: State<'_, AppState>, paper_id: String) -> Result<Vec<Not
             "SELECT id, paper_id, content, anchor_text, created_at
              FROM notes
              WHERE paper_id = ?1
-             ORDER BY created_at DESC",
+             ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
 
@@ -791,6 +825,47 @@ pub fn get_notes(state: State<'_, AppState>, paper_id: String) -> Result<Vec<Not
         notes.push(note.map_err(|e| e.to_string())?);
     }
     Ok(notes)
+}
+
+#[tauri::command]
+pub fn delete_note(state: State<'_, AppState>, note_id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM notes WHERE id = ?1",
+        [note_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_chat_history(state: State<'_, AppState>, paper_id: String) -> Result<Vec<ai::ChatMessage>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT role, content
+             FROM chat_messages
+             WHERE paper_id = ?1
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let msg_iter = stmt
+        .query_map([paper_id], |row| {
+            Ok(ai::ChatMessage {
+                role: row.get(0)?,
+                content: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut messages = Vec::new();
+    for msg in msg_iter {
+        messages.push(msg.map_err(|e| e.to_string())?);
+    }
+    
+    // Filter out 'system' messages from the UI return, but maybe we want to just return them all and let frontend decide?
+    // Actually, returning everything is fine. The frontend can filter out 'system'.
+    Ok(messages)
 }
 
 #[tauri::command]
@@ -834,8 +909,57 @@ pub async fn ask_paper(
         rank_chunk_snippets(&conn, &paper_id, &query, 3)?
     };
 
-    if snippets.is_empty() {
-        return Ok("I could not find relevant passages in this PDF yet. Try using more specific keywords from the paper.".to_string());
+    let mut user_prompt = String::new();
+    if let Some(sel) = selected_text.as_ref().filter(|s| !s.trim().is_empty()) {
+        user_prompt.push_str(&format!("Selected Text Context:\n\"\"\"\n{}\n\"\"\"\n\n", sel));
+    }
+    
+    if !snippets.is_empty() {
+        user_prompt.push_str("Relevant passages from the paper:\n");
+        for (idx, snippet) in snippets.iter().enumerate() {
+            user_prompt.push_str(&format!("--- Passage [{}] ---\n{}\n\n", idx + 1, snippet));
+        }
+    }
+    
+    user_prompt.push_str(&format!("Question: {}", question));
+
+    // 1. Save user message to DB
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO chat_messages (paper_id, role, content) VALUES (?1, ?2, ?3)",
+            params![&paper_id, "user", &question],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    // 2. Fetch history from DB
+    let mut messages = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT role, content FROM chat_messages WHERE paper_id = ?1 ORDER BY id ASC")
+            .map_err(|e| e.to_string())?;
+
+        let msg_iter = stmt
+            .query_map([&paper_id], |row| {
+                Ok(ai::ChatMessage {
+                    role: row.get(0)?,
+                    content: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut msgs = Vec::new();
+        for msg in msg_iter {
+            msgs.push(msg.map_err(|e| e.to_string())?);
+        }
+        msgs
+    };
+
+    // 3. Replace the last user message with our "augmented" user_prompt (contains snippets)
+    if let Some(last_msg) = messages.last_mut() {
+        if last_msg.role == "user" {
+            last_msg.content = user_prompt;
+        }
     }
 
     let ai_settings = {
@@ -843,24 +967,17 @@ pub async fn ask_paper(
         get_ai_settings(&conn, false)?
     };
 
-    let system_prompt = "You are LibrisArk, an advanced literature research assistant. \
-                         Answer the user's question about the research paper based on the provided relevant passages and any selected text. \
-                         Be scientific, clear, and comprehensive. Quote relevant equations or terms when appropriate. \
-                         If the answer cannot be deduced from the provided passages, state that explicitly, but offer a helpful response based on your general scientific training.";
+    let answer = ai::call_llm(&ai_settings, &messages, false).await?;
 
-    let mut user_prompt = String::new();
-    if let Some(sel) = selected_text.as_ref().filter(|s| !s.trim().is_empty()) {
-        user_prompt.push_str(&format!("Selected Text Context:\n\"\"\"\n{}\n\"\"\"\n\n", sel));
+    // 4. Save assistant response to DB
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO chat_messages (paper_id, role, content) VALUES (?1, ?2, ?3)",
+            params![&paper_id, "assistant", &answer],
+        ).map_err(|e| e.to_string())?;
     }
-    
-    user_prompt.push_str("Relevant passages from the paper:\n");
-    for (idx, snippet) in snippets.iter().enumerate() {
-        user_prompt.push_str(&format!("--- Passage [{}] ---\n{}\n\n", idx + 1, snippet));
-    }
-    
-    user_prompt.push_str(&format!("Question: {}\n\nAnswer:", question));
 
-    let answer = ai::call_llm(&ai_settings, system_prompt, &user_prompt, false).await?;
     Ok(answer)
 }
 
@@ -1280,11 +1397,11 @@ pub fn get_app_setting(state: State<'_, AppState>, key: String) -> Result<Option
 }
 
 #[tauri::command]
-pub async fn generate_ai_summary(state: State<'_, AppState>, app_handle: AppHandle, paper_id: String) -> Result<(), String> {
-    generate_ai_summary_internal(&state, app_handle, paper_id).await
+pub async fn start_copilot_session(state: State<'_, AppState>, app_handle: AppHandle, paper_id: String) -> Result<(), String> {
+    start_copilot_session_internal(&state, app_handle, paper_id).await
 }
 
-pub async fn generate_ai_summary_internal(state: &AppState, app_handle: AppHandle, paper_id: String) -> Result<(), String> {
+pub async fn start_copilot_session_internal(state: &AppState, app_handle: AppHandle, paper_id: String) -> Result<(), String> {
     let (path, _title) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -1325,19 +1442,44 @@ pub async fn generate_ai_summary_internal(state: &AppState, app_handle: AppHandl
                          2. \"structured_summary\": A structured overview containing Background, Methodology, Results, and Conclusion. \
                          3. \"tags\": A JSON array of 3 to 5 relevant scientific keywords or areas (e.g. [\"Machine Learning\", \"Optics\"]).";
 
-    let response = ai::call_llm(&ai_settings, system_prompt, sample_text, true).await?;
+    let messages = vec![
+        ai::ChatMessage {
+            role: "system".to_string(),
+            content: system_prompt.to_string(),
+        },
+        ai::ChatMessage {
+            role: "user".to_string(),
+            content: sample_text.to_string(),
+        },
+    ];
+
+    let response = ai::call_llm(&ai_settings, &messages, true).await?;
     let clean_json = ai::extract_json_block(&response);
 
     let summary_result: ai::AISummaryResult = serde_json::from_str(&clean_json)
         .map_err(|e| format!("Failed to parse JSON response: {}. Response was: {}", e, response))?;
 
+    let structured_summary_str = if summary_result.structured_summary.is_string() {
+        summary_result.structured_summary.as_str().unwrap().to_string()
+    } else if let Some(obj) = summary_result.structured_summary.as_object() {
+        let mut s = String::new();
+        for (k, v) in obj {
+            let val_str = v.as_str().unwrap_or_else(|| "").to_string();
+            let val_str = if val_str.is_empty() { v.to_string() } else { val_str };
+            s.push_str(&format!("**{}**: {}\n\n", k, val_str));
+        }
+        s.trim().to_string()
+    } else {
+        summary_result.structured_summary.to_string()
+    };
+
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE papers SET one_sentence_summary = ?1, structured_summary = ?2 WHERE id = ?3",
-        params![summary_result.one_sentence_summary, summary_result.structured_summary, paper_id],
+        params![summary_result.one_sentence_summary, structured_summary_str, paper_id],
     ).map_err(|e| e.to_string())?;
 
-    for tag in summary_result.tags {
+    for tag in &summary_result.tags {
         let tag_name = tag.trim().to_lowercase();
         if tag_name.is_empty() {
             continue;
@@ -1356,9 +1498,30 @@ pub async fn generate_ai_summary_internal(state: &AppState, app_handle: AppHandl
 
         conn.execute(
             "INSERT OR IGNORE INTO paper_tags (paper_id, tag_id) VALUES (?1, ?2)",
-            params![paper_id, tag_id],
+            params![&paper_id, tag_id],
         ).map_err(|e| e.to_string())?;
     }
+
+    // Initialize chat session in DB
+    let chat_greeting = format!(
+        "Hello! I am your AI Copilot. Here is a brief summary of the paper:\n\n**{}**\n\n{}", 
+        summary_result.one_sentence_summary, 
+        structured_summary_str
+    );
+
+    let base_system_prompt = "You are LibrisArk, an advanced literature research assistant. \
+                              Answer the user's questions about this paper context. \
+                              Be scientific, clear, and comprehensive.";
+
+    conn.execute(
+        "INSERT INTO chat_messages (paper_id, role, content) VALUES (?1, ?2, ?3)",
+        params![&paper_id, "system", base_system_prompt],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO chat_messages (paper_id, role, content) VALUES (?1, ?2, ?3)",
+        params![&paper_id, "assistant", chat_greeting],
+    ).map_err(|e| e.to_string())?;
 
     let _ = app_handle.emit("library-update", "ai-summary-complete");
 

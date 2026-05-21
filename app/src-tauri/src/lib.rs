@@ -24,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
             let app_handle = app.handle();
@@ -71,11 +72,14 @@ pub fn run() {
             commands::get_papers,
             commands::get_papers_filtered,
             commands::get_virtual_facets,
+            commands::delete_paper,
             commands::preview_rename,
             commands::apply_rename,
             commands::ask_paper,
             commands::save_note,
             commands::get_notes,
+            commands::delete_note,
+            commands::get_chat_history,
             commands::onedrive_login,
             commands::onedrive_callback,
             commands::set_onedrive_client_id,
@@ -90,7 +94,7 @@ pub fn run() {
             commands::delete_ai_key,
             commands::set_app_setting,
             commands::get_app_setting,
-            commands::generate_ai_summary
+            commands::start_copilot_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

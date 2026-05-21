@@ -11,7 +11,7 @@ pub struct AISettings {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AISummaryResult {
     pub one_sentence_summary: String,
-    pub structured_summary: String,
+    pub structured_summary: serde_json::Value,
     pub tags: Vec<String>,
 }
 
@@ -85,6 +85,8 @@ struct GeminiGenerateRequest {
 
 #[derive(Serialize)]
 struct GeminiContent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
     parts: Vec<GeminiPart>,
 }
 
@@ -120,10 +122,15 @@ struct GeminiCandidateContent {
     parts: Vec<GeminiPart>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
 pub async fn call_llm(
     settings: &AISettings,
-    system_prompt: &str,
-    user_prompt: &str,
+    messages: &[ChatMessage],
     force_json: bool,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
@@ -148,16 +155,10 @@ pub async fn call_llm(
 
             let req = OpenAIChatRequest {
                 model: settings.model.clone(),
-                messages: vec![
-                    OpenAIMessage {
-                        role: "system".to_string(),
-                        content: system_prompt.to_string(),
-                    },
-                    OpenAIMessage {
-                        role: "user".to_string(),
-                        content: user_prompt.to_string(),
-                    },
-                ],
+                messages: messages.iter().map(|m| OpenAIMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                }).collect(),
                 response_format,
                 temperature: 0.2,
             };
@@ -192,13 +193,16 @@ pub async fn call_llm(
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+            let system = messages.iter().find(|m| m.role == "system").map(|m| m.content.clone()).unwrap_or_default();
+            let msg_list: Vec<AnthropicMessage> = messages.iter().filter(|m| m.role != "system").map(|m| AnthropicMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            }).collect();
+
             let req = AnthropicMessageRequest {
                 model: settings.model.clone(),
-                system: system_prompt.to_string(),
-                messages: vec![AnthropicMessage {
-                    role: "user".to_string(),
-                    content: user_prompt.to_string(),
-                }],
+                system,
+                messages: msg_list,
                 max_tokens: 4000,
                 temperature: 0.2,
             };
@@ -242,17 +246,22 @@ pub async fn call_llm(
                 },
             };
 
+            let system_instruction = messages.iter().find(|m| m.role == "system").map(|m| GeminiInstruction {
+                parts: vec![GeminiPart { text: m.content.clone() }],
+            });
+
+            let mut contents = Vec::new();
+            for m in messages.iter().filter(|m| m.role != "system") {
+                let role = if m.role == "assistant" { "model" } else { "user" };
+                contents.push(GeminiContent {
+                    role: Some(role.to_string()),
+                    parts: vec![GeminiPart { text: m.content.clone() }],
+                });
+            }
+
             let req = GeminiGenerateRequest {
-                contents: vec![GeminiContent {
-                    parts: vec![GeminiPart {
-                        text: user_prompt.to_string(),
-                    }],
-                }],
-                system_instruction: Some(GeminiInstruction {
-                    parts: vec![GeminiPart {
-                        text: system_prompt.to_string(),
-                    }],
-                }),
+                contents,
+                system_instruction,
                 generation_config: Some(config),
             };
 
