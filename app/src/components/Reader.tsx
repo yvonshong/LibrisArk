@@ -1,8 +1,8 @@
-import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
+import { Panel, PanelGroup, PanelResizeHandle, ImperativePanelHandle } from "react-resizable-panels";
 import { ChatPanel } from "./ChatPanel";
 import { Paper, Note } from "../types";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -15,17 +15,39 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 interface ReaderProps {
     selectedPaper: Paper | null;
+    onPaperUpdated?: (paper: Paper) => void;
 }
 
-export function Reader({ selectedPaper }: ReaderProps) {
+export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
     const [numPages, setNumPages] = useState<number | null>(null);
     const [_pageNumber, _setPageNumber] = useState(1);
     const [selectedText, setSelectedText] = useState("");
     const [scale, setScale] = useState(1.0);
+    const [pdfScale, setPdfScale] = useState(1.0);
     const containerRef = useRef<HTMLDivElement>(null);
 
+    // Debounce pdfScale to prevent flickering on continuous zoom
+    useEffect(() => {
+        const t = setTimeout(() => {
+            setPdfScale(scale);
+        }, 200);
+        return () => clearTimeout(t);
+    }, [scale]);
+
+    const [isPanning, setIsPanning] = useState(false);
+    const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+    const [scrollPan, setScrollPan] = useState({ left: 0, top: 0 });
+
+    const chatPanelRef = useRef<ImperativePanelHandle>(null);
+    const handleChatPanelExpand = useCallback(() => {
+        chatPanelRef.current?.expand();
+    }, []);
+
+    // Handle Wheel Zoom (depends on selectedPaper so it binds correctly when paper loads)
     useEffect(() => {
         const container = containerRef.current;
+        if (!container) return;
+
         const handleWheel = (e: WheelEvent) => {
             if (e.ctrlKey || e.metaKey) {
                 e.preventDefault();
@@ -34,16 +56,59 @@ export function Reader({ selectedPaper }: ReaderProps) {
             }
         };
 
-        if (container) {
-            container.addEventListener('wheel', handleWheel, { passive: false });
-        }
+        container.addEventListener('wheel', handleWheel, { passive: false });
 
         return () => {
-            if (container) {
-                container.removeEventListener('wheel', handleWheel);
+            container.removeEventListener('wheel', handleWheel);
+        };
+    }, [selectedPaper]);
+
+    // Handle Keyboard Zoom
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey || e.metaKey) {
+                if (e.key === '=' || e.key === '+' || e.key === '-') {
+                    e.preventDefault();
+                    const zoomAmount = e.key === '-' ? -0.1 : 0.1;
+                    setScale(prev => Math.max(0.5, Math.min(prev + zoomAmount, 3.0)));
+                } else if (e.key === '0') {
+                    e.preventDefault();
+                    setScale(1.0);
+                }
             }
         };
+
+        window.addEventListener('keydown', handleKeyDown, { passive: false });
+        return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
+
+    // Handle Panning (Middle Click Drag)
+    useEffect(() => {
+        if (!isPanning) return;
+
+        const scrollContainer = containerRef.current?.parentElement;
+        if (!scrollContainer) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            const dx = e.clientX - startPan.x;
+            const dy = e.clientY - startPan.y;
+            scrollContainer.scrollLeft = scrollPan.left - dx;
+            scrollContainer.scrollTop = scrollPan.top - dy;
+        };
+
+        const handleMouseUp = (e: MouseEvent) => {
+            if (e.button === 1) { // Middle click release
+                setIsPanning(false);
+            }
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isPanning, startPan, scrollPan]);
 
     useEffect(() => {
         const handleMouseUp = (e: MouseEvent) => {
@@ -120,25 +185,47 @@ export function Reader({ selectedPaper }: ReaderProps) {
             <PanelGroup orientation="horizontal" className="h-full w-full">
                 <Panel defaultSize="70" minSize="50" className="h-full relative overflow-auto">
                     {selectedPaper ? (
-                        <div ref={containerRef} className="w-full flex justify-center py-8 outline-none" tabIndex={0}>
-                            <Document
-                                file={convertFileSrc(selectedPaper.path)}
-                                onLoadSuccess={onDocumentLoadSuccess}
-                                className="shadow-lg flex flex-col gap-4"
-                                loading={<div className="p-8 text-neutral-500">Loading PDF...</div>}
+                        <div 
+                            ref={containerRef} 
+                            className={`w-max min-w-full flex flex-col items-center py-8 outline-none ${isPanning ? 'cursor-grabbing' : ''}`}
+                            tabIndex={0}
+                            onMouseDown={(e) => {
+                                if (e.button === 1) { // Middle click
+                                    e.preventDefault();
+                                    const scrollContainer = containerRef.current?.parentElement;
+                                    if (scrollContainer) {
+                                        setIsPanning(true);
+                                        setStartPan({ x: e.clientX, y: e.clientY });
+                                        setScrollPan({ left: scrollContainer.scrollLeft, top: scrollContainer.scrollTop });
+                                    }
+                                }
+                            }}
+                        >
+                            <div 
+                                style={{ 
+                                    transform: `scale(${scale / pdfScale})`, 
+                                    transformOrigin: 'top center',
+                                    transition: scale === pdfScale ? 'none' : 'transform 0.05s ease-out'
+                                }}
                             >
-                                {Array.from(new Array(numPages || 0), (_, index) => (
-                                    <Page
-                                        key={`page_${index + 1}`}
-                                        pageNumber={index + 1}
-                                        renderAnnotationLayer
-                                        renderTextLayer
-                                        width={800} // A decent readable width
-                                        scale={scale}
-                                        className="bg-white shadow-sm"
-                                    />
-                                ))}
-                            </Document>
+                                <Document
+                                    file={convertFileSrc(selectedPaper.path)}
+                                    onLoadSuccess={onDocumentLoadSuccess}
+                                    className="shadow-lg flex flex-col gap-4"
+                                    loading={<div className="p-8 text-neutral-500">Loading PDF...</div>}
+                                >
+                                    {Array.from(new Array(numPages || 0), (_, index) => (
+                                        <Page
+                                            key={`page_${index + 1}`}
+                                            pageNumber={index + 1}
+                                            renderAnnotationLayer
+                                            renderTextLayer
+                                            width={800 * pdfScale} // Apply debounced scale to react-pdf to prevent re-rendering flickers
+                                            className="bg-white shadow-sm"
+                                        />
+                                    ))}
+                                </Document>
+                            </div>
                         </div>
                     ) : (
                         <div className="h-full flex items-center justify-center text-neutral-400">
@@ -152,8 +239,8 @@ export function Reader({ selectedPaper }: ReaderProps) {
 
                 <PanelResizeHandle className="w-1 bg-neutral-200 dark:bg-neutral-800 hover:bg-blue-500 transition-colors cursor-col-resize z-10" />
 
-                <Panel defaultSize="30" minSize="15" collapsible={true} className="h-full border-l border-neutral-200 dark:border-neutral-800 chat-panel-container overflow-hidden">
-                    <ChatPanel selectedPaper={selectedPaper} externalSelectedText={selectedText} onNoteClick={handleNoteClick} />
+                <Panel id="chat-panel" ref={chatPanelRef} defaultSize={30} minSize={20} collapsible={true} className="h-full border-l border-neutral-200 dark:border-neutral-800">
+                    <ChatPanel selectedPaper={selectedPaper} externalSelectedText={selectedText} onNoteClick={handleNoteClick} onPaperUpdated={onPaperUpdated} onExpandRequested={handleChatPanelExpand} />
                 </Panel>
             </PanelGroup>
         </div>

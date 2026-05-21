@@ -1,4 +1,4 @@
-import { Send, Bot, User, BookmarkPlus, Sparkles, RefreshCw, Plus, FileText, ClipboardCopy, Info, Trash2 } from "lucide-react";
+import { Send, Bot, User, BookmarkPlus, Sparkles, RefreshCw, Plus, FileText, ClipboardCopy, Info, Trash2, Edit2, Check, X, Loader2 } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import { invoke } from "@tauri-apps/api/core";
@@ -8,9 +8,11 @@ interface ChatPanelProps {
     selectedPaper: Paper | null;
     externalSelectedText?: string;
     onNoteClick?: (note: Note) => void;
+    onPaperUpdated?: (paper: Paper) => void;
+    onExpandRequested?: () => void;
 }
 
-export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: ChatPanelProps) {
+export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, onPaperUpdated, onExpandRequested }: ChatPanelProps) {
     const [activeTab, setActiveTab] = useState<'copilot' | 'notes' | 'info'>('copilot');
     const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
     const [input, setInput] = useState("");
@@ -19,6 +21,9 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: 
     const [isInitializing, setIsInitializing] = useState(false);
     const [notes, setNotes] = useState<Note[]>([]);
     const [newNoteText, setNewNoteText] = useState("");
+    const [isEditingDoi, setIsEditingDoi] = useState(false);
+    const [editDoiValue, setEditDoiValue] = useState("");
+    const [isUpdatingMetadata, setIsUpdatingMetadata] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
@@ -50,9 +55,6 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: 
     useEffect(() => {
         if (externalSelectedText) {
             setSelectedTextContext(externalSelectedText);
-            if (activeTab !== 'copilot') {
-                setActiveTab('notes');
-            }
         } else {
             setSelectedTextContext("");
         }
@@ -128,12 +130,32 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: 
         }
     };
 
+    const handleUpdateDoi = async () => {
+        if (!selectedPaper) return;
+        setIsUpdatingMetadata(true);
+        try {
+            const updatedPaper = await invoke<Paper>("update_paper_metadata_by_doi", {
+                id: selectedPaper.id,
+                doi: editDoiValue
+            });
+            setIsEditingDoi(false);
+            if (onPaperUpdated) {
+                onPaperUpdated(updatedPaper);
+            }
+        } catch (error) {
+            console.error("Failed to update DOI and metadata:", error);
+            // Could add a toast or alert here if there's error UI
+        } finally {
+            setIsUpdatingMetadata(false);
+        }
+    };
+
     return (
         <div className="h-full flex bg-neutral-50 dark:bg-neutral-900 border-l border-neutral-200 dark:border-neutral-800">
             {/* Tab Header (Vertical) */}
             <div className="flex flex-col border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 w-14 items-center py-4 space-y-4 shrink-0">
                 <button
-                    onClick={() => setActiveTab('copilot')}
+                    onClick={() => { setActiveTab('copilot'); onExpandRequested?.(); }}
                     title="AI Copilot"
                     className={`p-2 rounded-lg transition-colors ${
                         activeTab === 'copilot'
@@ -144,7 +166,7 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: 
                     <Bot size={20} />
                 </button>
                 <button
-                    onClick={() => setActiveTab('notes')}
+                    onClick={() => { setActiveTab('notes'); onExpandRequested?.(); }}
                     title="Notes"
                     className={`p-2 rounded-lg transition-colors relative ${
                         activeTab === 'notes'
@@ -160,7 +182,7 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: 
                     )}
                 </button>
                 <button
-                    onClick={() => setActiveTab('info')}
+                    onClick={() => { setActiveTab('info'); onExpandRequested?.(); }}
                     title="Paper Info"
                     className={`p-2 rounded-lg transition-colors ${
                         activeTab === 'info'
@@ -378,8 +400,47 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick }: 
                                         <p className="text-neutral-800 dark:text-neutral-200">{selectedPaper.year || "Unknown"}</p>
                                     </div>
                                     <div>
-                                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">DOI</h4>
-                                        <p className="text-neutral-800 dark:text-neutral-200">{selectedPaper.doi || "Unknown"}</p>
+                                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1 flex items-center gap-1">
+                                            DOI
+                                            {isUpdatingMetadata && <Loader2 size={10} className="animate-spin text-blue-500" />}
+                                        </h4>
+                                        {isEditingDoi ? (
+                                            <div className="flex items-center gap-1">
+                                                <input
+                                                    type="text"
+                                                    value={editDoiValue}
+                                                    onChange={(e) => setEditDoiValue(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') handleUpdateDoi();
+                                                        if (e.key === 'Escape') setIsEditingDoi(false);
+                                                    }}
+                                                    autoFocus
+                                                    className="flex-1 min-w-0 text-xs px-1.5 py-0.5 border rounded border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 outline-none focus:border-blue-500"
+                                                    placeholder="10.xxxx/..."
+                                                />
+                                                <button onClick={handleUpdateDoi} className="p-0.5 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded" disabled={isUpdatingMetadata}>
+                                                    <Check size={12} />
+                                                </button>
+                                                <button onClick={() => setIsEditingDoi(false)} className="p-0.5 text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 rounded" disabled={isUpdatingMetadata}>
+                                                    <X size={12} />
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center group gap-1">
+                                                <p className="text-neutral-800 dark:text-neutral-200 truncate">
+                                                    {selectedPaper.doi || "Unknown"}
+                                                </p>
+                                                <button
+                                                    onClick={() => {
+                                                        setEditDoiValue(selectedPaper.doi || "");
+                                                        setIsEditingDoi(true);
+                                                    }}
+                                                    className="opacity-0 group-hover:opacity-100 p-0.5 text-neutral-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-all"
+                                                >
+                                                    <Edit2 size={10} />
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 <div>

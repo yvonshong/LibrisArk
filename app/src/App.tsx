@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { FileList } from "./components/FileList";
 import { Reader } from "./components/Reader";
 import { Settings } from "./components/Settings";
-import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle, ImperativePanelHandle } from "react-resizable-panels";
 import { LibraryFilter, Paper } from "./types";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -34,6 +34,8 @@ function App() {
     };
   }, [selectedPaper?.id]);
 
+  const fileListPanelRef = useRef<ImperativePanelHandle>(null);
+
   return (
     <div className="h-screen w-screen overflow-hidden bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-50 flex">
       <div className="h-full shrink-0 z-10">
@@ -44,6 +46,7 @@ function App() {
             if (view !== "settings") {
               setLibraryFilter({ kind: "all", value: null });
             }
+            fileListPanelRef.current?.expand();
           }}
         />
       </div>
@@ -57,7 +60,7 @@ function App() {
             </Panel>
           ) : (
             <>
-              <Panel id="file-list-panel" defaultSize={30} minSize={15} collapsible={true} className="h-full border-r border-neutral-200 dark:border-neutral-800 overflow-hidden">
+              <Panel id="file-list-panel" ref={fileListPanelRef} defaultSize={30} minSize={15} collapsible={true} className="h-full border-r border-neutral-200 dark:border-neutral-800 overflow-hidden">
                 <FileList
                   onSelectPaper={setSelectedPaper}
                   selectedPaperId={selectedPaper?.id}
@@ -72,7 +75,7 @@ function App() {
               </PanelResizeHandle>
 
               <Panel id="reader-panel" defaultSize={70} minSize={20} className="h-full">
-                <Reader selectedPaper={selectedPaper} />
+                <Reader selectedPaper={selectedPaper} onPaperUpdated={setSelectedPaper} />
               </Panel>
             </>
           )}

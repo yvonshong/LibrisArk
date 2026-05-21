@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "features": "Features",
+    "about": "About",
+    "download": "Download"
+  },
+  "hero": {
+    "title": "LibrisArk",
+    "subtitle": "A Local-First, AI-Enhanced Desktop Literature Management Tool",
+    "description": "LibrisArk is designed for modern researchers. It solves the pain points of traditional reference managers regarding seamless AI integration, flexible local file management, and strict privacy protection.",
+    "cta_download": "Download for Free",
+    "cta_github": "View on GitHub"
+  },
+  "features": {
+    "local_first_title": "Local-First Architecture",
+    "local_first_desc": "Built with Tauri (Rust) and SQLite, ensuring high performance, low memory footprint, and absolute control over your local data.",
+    "ai_copilot_title": "AI Copilot Integration",
+    "ai_copilot_desc": "Instantly generate structured summaries and extract smart tags for any PDF. Chat directly with your papers using a context-aware AI session.",
+    "privacy_title": "Cost & Privacy Optimized",
+    "privacy_desc": "AI chat history is persisted locally. This means no redundant tokens are spent re-reading the same PDF across multiple sessions.",
+    "modern_ui_title": "Modern & Dynamic UI",
+    "modern_ui_desc": "A beautiful, responsive interface built with React. Features include a sleek icon-only sidebar, dynamic tag filtering, and a built-in PDF reader.",
+    "cross_platform_title": "Cross-Platform",
+    "cross_platform_desc": "Available for Windows, macOS, and Linux, ensuring you can manage your literature wherever you work."
+  },
+  "footer": {
+    "rights": "All rights reserved."
+  }
+}

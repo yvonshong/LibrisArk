@@ -24,7 +24,7 @@ export function FileList({ onSelectPaper, selectedPaperId, filter, onFilterChang
     const [papers, setPapers] = useState<Paper[]>([]);
     const [isEnriching, setIsEnriching] = useState(false);
     const [searchTerm, setSearchTerm] = useState("");
-    const [renameTemplate, setRenameTemplate] = useState("{Author}_{Year}_{Title}.pdf");
+    const [renameTemplate, setRenameTemplate] = useState("{Title}_{Author}_{Year}.pdf");
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     
     // For Tags view
@@ -272,7 +272,7 @@ export function FileList({ onSelectPaper, selectedPaperId, filter, onFilterChang
                     value={renameTemplate}
                     onChange={(e) => setRenameTemplate(e.target.value)}
                     className="flex-1 min-w-[100px] rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-[11px]"
-                    placeholder="{Author}_{Year}_{Title}.pdf"
+                    placeholder="{Title}_{Author}_{Year}.pdf"
                 />
                 <div className="flex gap-1">
                     <button

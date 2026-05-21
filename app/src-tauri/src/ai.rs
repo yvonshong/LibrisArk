@@ -3,9 +3,10 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AISettings {
-    pub provider: String, // "openai", "anthropic", "gemini"
+    pub provider: String, // "openai", "anthropic", "gemini", "deepseek", "custom"
     pub model: String,
     pub api_key: String,
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -136,7 +137,7 @@ pub async fn call_llm(
     let client = reqwest::Client::new();
 
     match settings.provider.as_str() {
-        "openai" => {
+        "openai" | "deepseek" | "custom" => {
             let mut headers = HeaderMap::new();
             headers.insert(
                 AUTHORIZATION,
@@ -163,8 +164,23 @@ pub async fn call_llm(
                 temperature: 0.2,
             };
 
+            let default_url = match settings.provider.as_str() {
+                "deepseek" => "https://api.deepseek.com/chat/completions",
+                _ => "https://api.openai.com/v1/chat/completions",
+            };
+            
+            let url = if let Some(ref custom_url) = settings.base_url {
+                if custom_url.trim().is_empty() {
+                    default_url.to_string()
+                } else {
+                    custom_url.clone()
+                }
+            } else {
+                default_url.to_string()
+            };
+
             let res = client
-                .post("https://api.openai.com/v1/chat/completions")
+                .post(&url)
                 .headers(headers)
                 .json(&req)
                 .send()
@@ -207,8 +223,18 @@ pub async fn call_llm(
                 temperature: 0.2,
             };
 
+            let url = if let Some(ref custom_url) = settings.base_url {
+                if custom_url.trim().is_empty() {
+                    "https://api.anthropic.com/v1/messages".to_string()
+                } else {
+                    custom_url.clone()
+                }
+            } else {
+                "https://api.anthropic.com/v1/messages".to_string()
+            };
+
             let res = client
-                .post("https://api.anthropic.com/v1/messages")
+                .post(&url)
                 .headers(headers)
                 .json(&req)
                 .send()
@@ -232,9 +258,19 @@ pub async fn call_llm(
                 .ok_or_else(|| "Empty content from Anthropic response".to_string())
         }
         "gemini" => {
+            let base_url = if let Some(ref custom_url) = settings.base_url {
+                if custom_url.trim().is_empty() {
+                    "https://generativelanguage.googleapis.com/v1beta".to_string()
+                } else {
+                    custom_url.clone()
+                }
+            } else {
+                "https://generativelanguage.googleapis.com/v1beta".to_string()
+            };
+            
             let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                settings.model, settings.api_key
+                "{}/models/{}:generateContent?key={}",
+                base_url, settings.model, settings.api_key
             );
 
             let config = GeminiConfig {

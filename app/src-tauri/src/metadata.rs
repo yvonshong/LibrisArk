@@ -91,8 +91,15 @@ pub fn extract_doi(text: &str) -> Option<String> {
 
 pub async fn fetch_crossref_by_doi(doi: &str) -> Result<Option<MetadataCandidate>, String> {
     let url = format!("https://api.crossref.org/works/{}", doi);
-    let resp = reqwest::get(url).await.map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .user_agent("LibrisArk/0.1.0 (mailto:song@example.com)")
+        .build()
+        .map_err(|e| e.to_string())?;
+        
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    
     if !resp.status().is_success() {
+        println!("CrossRef API failed for DOI {}: {}", doi, resp.status());
         return Ok(None);
     }
 
@@ -101,7 +108,11 @@ pub async fn fetch_crossref_by_doi(doi: &str) -> Result<Option<MetadataCandidate
 }
 
 pub async fn fetch_crossref_by_title(title: &str) -> Result<Option<MetadataCandidate>, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent("LibrisArk/0.1.0 (mailto:song@example.com)")
+        .build()
+        .map_err(|e| e.to_string())?;
+        
     let resp = client
         .get("https://api.crossref.org/works")
         .query(&[("query.title", title), ("rows", "1")])
@@ -110,6 +121,7 @@ pub async fn fetch_crossref_by_title(title: &str) -> Result<Option<MetadataCandi
         .map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
+        println!("CrossRef API failed for title {}: {}", title, resp.status());
         return Ok(None);
     }
 

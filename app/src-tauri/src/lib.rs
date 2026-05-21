@@ -71,6 +71,7 @@ pub fn run() {
             commands::enrich_metadata,
             commands::get_papers,
             commands::get_papers_filtered,
+            commands::update_paper_metadata_by_doi,
             commands::get_virtual_facets,
             commands::delete_paper,
             commands::preview_rename,

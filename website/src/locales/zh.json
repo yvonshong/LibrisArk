@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "features": "特性",
+    "about": "关于",
+    "download": "下载"
+  },
+  "hero": {
+    "title": "LibrisArk",
+    "subtitle": "本地优先、AI 增强的桌面端文献管理工具",
+    "description": "LibrisArk 专为现代科研人员量身打造。旨在解决传统文献管理软件在 AI 深度整合、本地文件灵活管理以及数据隐私保护方面存在的痛点。",
+    "cta_download": "免费下载",
+    "cta_github": "在 GitHub 上查看"
+  },
+  "features": {
+    "local_first_title": "本地优先架构",
+    "local_first_desc": "采用 Tauri (Rust) + SQLite 构建，保证了极致的启动性能、极低的内存占用，同时让您对本地科研数据拥有绝对的控制权。",
+    "ai_copilot_title": "AI Copilot (智能副驾)",
+    "ai_copilot_desc": "一键为 PDF 文献生成结构化总结和智能标签。您可以在侧边栏直接与当前论文对话，进行深入探讨。",
+    "privacy_title": "省流与隐私保护",
+    "privacy_desc": "AI 对话的上下文和历史记录会自动保存在本地数据库中。当您再次打开同一篇文献时，无需让 AI 重新阅读整个 PDF。",
+    "modern_ui_title": "现代化动态界面",
+    "modern_ui_desc": "使用 React 构建的精美响应式 UI。拥有极简的图标侧边栏、丝滑的标签筛选器、以及原生支持高亮批注的内置 PDF 阅读器。",
+    "cross_platform_title": "跨平台支持",
+    "cross_platform_desc": "完美运行于 Windows, macOS 以及 Linux。"
+  },
+  "footer": {
+    "rights": "保留所有权利。"
+  }
+}

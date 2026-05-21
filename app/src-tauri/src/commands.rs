@@ -555,6 +555,95 @@ pub async fn enrich_metadata(state: State<'_, AppState>) -> Result<u32, String> 
 }
 
 #[tauri::command]
+pub async fn update_paper_metadata_by_doi(app_handle: tauri::AppHandle, state: tauri::State<'_, AppState>, id: String, doi: String) -> Result<Paper, String> {
+    let candidate = metadata::fetch_crossref_by_doi(&doi).await?;
+    
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    // First update the DOI regardless of whether CrossRef found it
+    conn.execute(
+        "UPDATE papers SET doi = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        rusqlite::params![doi, id],
+    ).map_err(|e| e.to_string())?;
+
+    if let Some(candidate) = candidate {
+        conn.execute(
+            "UPDATE papers
+             SET title = COALESCE(?1, title),
+                 publish_year = COALESCE(?2, publish_year),
+                 abstract = COALESCE(?3, abstract),
+                 journal = COALESCE(?4, journal),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?5",
+            rusqlite::params![
+                candidate.title,
+                candidate.year,
+                candidate.abstract_text,
+                candidate.journal,
+                id
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        // Clear existing authors
+        conn.execute("DELETE FROM paper_authors WHERE paper_id = ?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
+
+        // Handle authors insertion
+        for author_name in candidate.authors {
+            conn.execute(
+                "INSERT OR IGNORE INTO authors (name) VALUES (?1)",
+                rusqlite::params![&author_name],
+            ).map_err(|e| e.to_string())?;
+
+            let author_id: i64 = conn.query_row(
+                "SELECT id FROM authors WHERE name = ?1",
+                rusqlite::params![&author_name],
+                |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
+
+            conn.execute(
+                "INSERT OR IGNORE INTO paper_authors (paper_id, author_id) VALUES (?1, ?2)",
+                rusqlite::params![&id, author_id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Refetch the updated paper (we use the same logic as get_papers but for one paper)
+    let mut stmt = conn.prepare("SELECT id, title, path, publish_year, doi, abstract, journal FROM papers WHERE id = ?1").map_err(|e| e.to_string())?;
+    
+    let row = stmt.query_row(rusqlite::params![id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<i32>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    }).map_err(|e| e.to_string())?;
+
+    // Get tags
+    let mut tags_stmt = conn.prepare("SELECT t.name FROM tags t JOIN paper_tags pt ON t.id = pt.tag_id WHERE pt.paper_id = ?1").map_err(|e| e.to_string())?;
+    let tags_iter = tags_stmt.query_map(rusqlite::params![id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let mut tags = Vec::new();
+    for t in tags_iter {
+        if let Ok(t_val) = t { tags.push(t_val); }
+    }
+
+    use tauri::Emitter;
+    let _ = app_handle.emit("library-update", "metadata-updated");
+
+    Ok(Paper {
+        id: row.0,
+        title: row.1,
+        path: row.2,
+        year: row.3,
+        doi: row.4,
+        one_sentence_summary: None,
+        structured_summary: None,
+        tags,
+    })
+}
+
+#[tauri::command]
 pub fn delete_paper(state: State<'_, AppState>, paper_ids: Vec<String>) -> Result<u32, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let library_path = get_library_path_internal(&conn)?.unwrap_or_default();
@@ -1292,15 +1381,27 @@ fn get_ai_settings(conn: &rusqlite::Connection, for_summary: bool) -> Result<ai:
     let mut provider = String::new();
     let mut copilot_model = String::new();
     let mut summary_model = String::new();
+    let mut base_url: Option<String> = None;
     
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let key: String = row.get(0).map_err(|e| e.to_string())?;
         let value: String = row.get(1).map_err(|e| e.to_string())?;
         match key.as_str() {
             "ai_provider" => provider = value,
-            "ai_copilot_model" => copilot_model = value,
-            "ai_summary_model" => summary_model = value,
+            "ai_copilot_model" => copilot_model = value.clone(),
+            "ai_summary_model" => summary_model = value.clone(),
+            k if k == format!("ai_{}_base_url", provider) => base_url = Some(value.clone()),
             _ => {}
+        }
+    }
+    
+    // We need to do a second pass if the provider was discovered late or base_url was before it
+    if base_url.is_none() && !provider.is_empty() {
+        let mut stmt2 = conn.prepare("SELECT value FROM settings WHERE key = ?1").map_err(|e| e.to_string())?;
+        if let Ok(url) = stmt2.query_row([format!("ai_{}_base_url", provider)], |row| row.get::<_, String>(0)) {
+            if !url.trim().is_empty() {
+                base_url = Some(url);
+            }
         }
     }
     
@@ -1314,6 +1415,8 @@ fn get_ai_settings(conn: &rusqlite::Connection, for_summary: bool) -> Result<ai:
                 "openai" => "gpt-4o-mini".to_string(),
                 "anthropic" => "claude-3-5-haiku-latest".to_string(),
                 "gemini" => "gemini-1.5-flash".to_string(),
+                "deepseek" => "deepseek-chat".to_string(),
+                "custom" => "custom-model".to_string(),
                 _ => return Err("Model not configured.".to_string()),
             }
         } else {
@@ -1325,6 +1428,8 @@ fn get_ai_settings(conn: &rusqlite::Connection, for_summary: bool) -> Result<ai:
                 "openai" => "gpt-4o".to_string(),
                 "anthropic" => "claude-3-5-sonnet-latest".to_string(),
                 "gemini" => "gemini-1.5-pro".to_string(),
+                "deepseek" => "deepseek-chat".to_string(),
+                "custom" => "custom-model".to_string(),
                 _ => return Err("Model not configured.".to_string()),
             }
         } else {
@@ -1339,6 +1444,7 @@ fn get_ai_settings(conn: &rusqlite::Connection, for_summary: bool) -> Result<ai:
         provider,
         model,
         api_key,
+        base_url,
     })
 }
 

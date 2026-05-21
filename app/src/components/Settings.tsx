@@ -20,10 +20,20 @@ export function Settings() {
     const [openaiKey, setOpenaiKey] = useState("");
     const [anthropicKey, setAnthropicKey] = useState("");
     const [geminiKey, setGeminiKey] = useState("");
+    const [deepseekKey, setDeepseekKey] = useState("");
+    const [customKey, setCustomKey] = useState("");
 
     const [hasOpenaiKey, setHasOpenaiKey] = useState(false);
     const [hasAnthropicKey, setHasAnthropicKey] = useState(false);
     const [hasGeminiKey, setHasGeminiKey] = useState(false);
+    const [hasDeepseekKey, setHasDeepseekKey] = useState(false);
+    const [hasCustomKey, setHasCustomKey] = useState(false);
+
+    const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
+    const [anthropicBaseUrl, setAnthropicBaseUrl] = useState("");
+    const [geminiBaseUrl, setGeminiBaseUrl] = useState("");
+    const [deepseekBaseUrl, setDeepseekBaseUrl] = useState("");
+    const [customBaseUrl, setCustomBaseUrl] = useState("");
 
     useEffect(() => {
         invoke<string | null>("get_library_path").then(path => {
@@ -74,6 +84,32 @@ export function Settings() {
             setHasGeminiKey(exists);
             if (exists) setGeminiKey("••••••••••••••••");
         }).catch(console.error);
+        
+        invoke<boolean>("get_ai_key_exists", { provider: "deepseek" }).then(exists => {
+            setHasDeepseekKey(exists);
+            if (exists) setDeepseekKey("••••••••••••••••");
+        }).catch(console.error);
+        
+        invoke<boolean>("get_ai_key_exists", { provider: "custom" }).then(exists => {
+            setHasCustomKey(exists);
+            if (exists) setCustomKey("••••••••••••••••");
+        }).catch(console.error);
+
+        invoke<string | null>("get_app_setting", { key: "ai_openai_base_url" }).then(val => {
+            if (val) setOpenaiBaseUrl(val);
+        }).catch(console.error);
+        invoke<string | null>("get_app_setting", { key: "ai_anthropic_base_url" }).then(val => {
+            if (val) setAnthropicBaseUrl(val);
+        }).catch(console.error);
+        invoke<string | null>("get_app_setting", { key: "ai_gemini_base_url" }).then(val => {
+            if (val) setGeminiBaseUrl(val);
+        }).catch(console.error);
+        invoke<string | null>("get_app_setting", { key: "ai_deepseek_base_url" }).then(val => {
+            if (val) setDeepseekBaseUrl(val);
+        }).catch(console.error);
+        invoke<string | null>("get_app_setting", { key: "ai_custom_base_url" }).then(val => {
+            if (val) setCustomBaseUrl(val);
+        }).catch(console.error);
     }, []);
 
     const saveSettings = async (silent = false) => {
@@ -96,6 +132,12 @@ export function Settings() {
             await invoke("set_app_setting", { key: "ai_copilot_model", value: aiCopilotModel });
             await invoke("set_app_setting", { key: "ai_summary_model", value: aiSummaryModel });
             await invoke("set_app_setting", { key: "ai_auto_summarize", value: aiAutoSummarize ? "true" : "false" });
+            
+            await invoke("set_app_setting", { key: "ai_openai_base_url", value: openaiBaseUrl });
+            await invoke("set_app_setting", { key: "ai_anthropic_base_url", value: anthropicBaseUrl });
+            await invoke("set_app_setting", { key: "ai_gemini_base_url", value: geminiBaseUrl });
+            await invoke("set_app_setting", { key: "ai_deepseek_base_url", value: deepseekBaseUrl });
+            await invoke("set_app_setting", { key: "ai_custom_base_url", value: customBaseUrl });
 
             // Save Keys if modified
             if (openaiKey !== "••••••••••••••••") {
@@ -109,6 +151,14 @@ export function Settings() {
             if (geminiKey !== "••••••••••••••••") {
                 await invoke("save_ai_key", { provider: "gemini", key: geminiKey });
                 setHasGeminiKey(geminiKey.trim() !== "");
+            }
+            if (deepseekKey !== "••••••••••••••••") {
+                await invoke("save_ai_key", { provider: "deepseek", key: deepseekKey });
+                setHasDeepseekKey(deepseekKey.trim() !== "");
+            }
+            if (customKey !== "••••••••••••••••") {
+                await invoke("save_ai_key", { provider: "custom", key: customKey });
+                setHasCustomKey(customKey.trim() !== "");
             }
 
             if (!silent) alert("Settings saved!");
@@ -288,6 +338,12 @@ export function Settings() {
                                     } else if (provider === "gemini") {
                                         setAiCopilotModel("gemini-1.5-pro");
                                         setAiSummaryModel("gemini-1.5-flash");
+                                    } else if (provider === "deepseek") {
+                                        setAiCopilotModel("deepseek-chat");
+                                        setAiSummaryModel("deepseek-chat");
+                                    } else if (provider === "custom") {
+                                        setAiCopilotModel("custom-model");
+                                        setAiSummaryModel("custom-model");
                                     }
                                 }}
                                 className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
@@ -295,143 +351,121 @@ export function Settings() {
                                 <option value="openai">OpenAI</option>
                                 <option value="anthropic">Anthropic</option>
                                 <option value="gemini">Google Gemini</option>
+                                <option value="deepseek">DeepSeek</option>
+                                <option value="custom">Custom (OpenAI Compatible)</option>
                             </select>
                         </div>
 
-                        {/* OpenAI Keys & Models */}
-                        {aiProvider === "openai" && (
-                            <div className="space-y-4 p-4 border border-neutral-200 dark:border-neutral-700 rounded-md">
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium flex justify-between">
-                                        <span>OpenAI API Key</span>
-                                        {hasOpenaiKey && <span className="text-xs text-green-600 dark:text-green-400">✓ Securely Stored</span>}
-                                    </label>
-                                    <input
-                                        type="password"
-                                        value={openaiKey}
-                                        onChange={(e) => setOpenaiKey(e.target.value)}
-                                        className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent"
-                                        placeholder="sk-..."
-                                    />
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Copilot Model</label>
-                                        <select
-                                            value={aiCopilotModel}
-                                            onChange={(e) => setAiCopilotModel(e.target.value)}
-                                            className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
-                                        >
-                                            <option value="gpt-4o">gpt-4o (Recommended)</option>
-                                            <option value="gpt-4o-mini">gpt-4o-mini</option>
-                                        </select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Summary Model</label>
-                                        <select
-                                            value={aiSummaryModel}
-                                            onChange={(e) => setAiSummaryModel(e.target.value)}
-                                            className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
-                                        >
-                                            <option value="gpt-4o-mini">gpt-4o-mini (Recommended)</option>
-                                            <option value="gpt-4o">gpt-4o</option>
-                                        </select>
-                                    </div>
-                                </div>
+                        {/* Dynamic Provider Settings */}
+                        <div className="space-y-4 p-4 border border-neutral-200 dark:border-neutral-700 rounded-md">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-neutral-600 dark:text-neutral-400">API Base URL (Optional)</label>
+                                <input
+                                    type="text"
+                                    value={
+                                        aiProvider === 'openai' ? openaiBaseUrl :
+                                        aiProvider === 'anthropic' ? anthropicBaseUrl :
+                                        aiProvider === 'gemini' ? geminiBaseUrl :
+                                        aiProvider === 'deepseek' ? deepseekBaseUrl : customBaseUrl
+                                    }
+                                    onChange={(e) => {
+                                        if (aiProvider === 'openai') setOpenaiBaseUrl(e.target.value);
+                                        else if (aiProvider === 'anthropic') setAnthropicBaseUrl(e.target.value);
+                                        else if (aiProvider === 'gemini') setGeminiBaseUrl(e.target.value);
+                                        else if (aiProvider === 'deepseek') setDeepseekBaseUrl(e.target.value);
+                                        else setCustomBaseUrl(e.target.value);
+                                    }}
+                                    className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent text-sm"
+                                    placeholder={
+                                        aiProvider === 'openai' ? "Default: https://api.openai.com/v1/chat/completions" :
+                                        aiProvider === 'anthropic' ? "Default: https://api.anthropic.com/v1/messages" :
+                                        aiProvider === 'gemini' ? "Default: https://generativelanguage.googleapis.com/v1beta" :
+                                        aiProvider === 'deepseek' ? "Default: https://api.deepseek.com/chat/completions" :
+                                        "e.g. https://api.openai.com/v1/chat/completions"
+                                    }
+                                />
                             </div>
-                        )}
 
-                        {/* Anthropic Keys & Models */}
-                        {aiProvider === "anthropic" && (
-                            <div className="space-y-4 p-4 border border-neutral-200 dark:border-neutral-700 rounded-md">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex justify-between">
+                                    <span>{aiProvider.charAt(0).toUpperCase() + aiProvider.slice(1)} API Key</span>
+                                    {(aiProvider === 'openai' ? hasOpenaiKey :
+                                      aiProvider === 'anthropic' ? hasAnthropicKey :
+                                      aiProvider === 'gemini' ? hasGeminiKey :
+                                      aiProvider === 'deepseek' ? hasDeepseekKey : hasCustomKey) && 
+                                      <span className="text-xs text-green-600 dark:text-green-400">✓ Securely Stored</span>}
+                                </label>
+                                <input
+                                    type="password"
+                                    value={
+                                        aiProvider === 'openai' ? openaiKey :
+                                        aiProvider === 'anthropic' ? anthropicKey :
+                                        aiProvider === 'gemini' ? geminiKey :
+                                        aiProvider === 'deepseek' ? deepseekKey : customKey
+                                    }
+                                    onChange={(e) => {
+                                        if (aiProvider === 'openai') setOpenaiKey(e.target.value);
+                                        else if (aiProvider === 'anthropic') setAnthropicKey(e.target.value);
+                                        else if (aiProvider === 'gemini') setGeminiKey(e.target.value);
+                                        else if (aiProvider === 'deepseek') setDeepseekKey(e.target.value);
+                                        else setCustomKey(e.target.value);
+                                    }}
+                                    className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent"
+                                    placeholder="Enter API Key..."
+                                />
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                    <label className="text-sm font-medium flex justify-between">
-                                        <span>Anthropic API Key</span>
-                                        {hasAnthropicKey && <span className="text-xs text-green-600 dark:text-green-400">✓ Securely Stored</span>}
-                                    </label>
+                                    <label className="text-sm font-medium">Copilot Model</label>
                                     <input
-                                        type="password"
-                                        value={anthropicKey}
-                                        onChange={(e) => setAnthropicKey(e.target.value)}
-                                        className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent"
-                                        placeholder="sk-ant-..."
+                                        type="text"
+                                        list={`${aiProvider}-models`}
+                                        value={aiCopilotModel}
+                                        onChange={(e) => setAiCopilotModel(e.target.value)}
+                                        className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
+                                        placeholder="e.g. gpt-4o"
                                     />
                                 </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Copilot Model</label>
-                                        <select
-                                            value={aiCopilotModel}
-                                            onChange={(e) => setAiCopilotModel(e.target.value)}
-                                            className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
-                                        >
-                                            <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
-                                            <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
-                                        </select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Summary Model</label>
-                                        <select
-                                            value={aiSummaryModel}
-                                            onChange={(e) => setAiSummaryModel(e.target.value)}
-                                            className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
-                                        >
-                                            <option value="claude-3-5-haiku-latest">claude-3-5-haiku-latest</option>
-                                            <option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
-                                        </select>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Gemini Keys & Models */}
-                        {aiProvider === "gemini" && (
-                            <div className="space-y-4 p-4 border border-neutral-200 dark:border-neutral-700 rounded-md">
                                 <div className="space-y-2">
-                                    <label className="text-sm font-medium flex justify-between">
-                                        <span>Gemini API Key</span>
-                                        {hasGeminiKey && <span className="text-xs text-green-600 dark:text-green-400">✓ Securely Stored</span>}
-                                    </label>
+                                    <label className="text-sm font-medium">Summary Model</label>
                                     <input
-                                        type="password"
-                                        value={geminiKey}
-                                        onChange={(e) => setGeminiKey(e.target.value)}
-                                        className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent"
-                                        placeholder="AIzaSy..."
+                                        type="text"
+                                        list={`${aiProvider}-models`}
+                                        value={aiSummaryModel}
+                                        onChange={(e) => setAiSummaryModel(e.target.value)}
+                                        className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
+                                        placeholder="e.g. gpt-4o-mini"
                                     />
                                 </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Copilot Model</label>
-                                        <select
-                                            value={aiCopilotModel}
-                                            onChange={(e) => setAiCopilotModel(e.target.value)}
-                                            className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
-                                        >
-                                            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                                            <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-                                            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
-                                            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-                                        </select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Summary Model</label>
-                                        <select
-                                            value={aiSummaryModel}
-                                            onChange={(e) => setAiSummaryModel(e.target.value)}
-                                            className="w-full p-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent dark:bg-neutral-800"
-                                        >
-                                            <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-                                            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                                            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
-                                            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-                                        </select>
-                                    </div>
-                                </div>
+                                <datalist id="openai-models">
+                                    <option value="gpt-4o" />
+                                    <option value="gpt-4.5-preview" />
+                                    <option value="gpt-4o-mini" />
+                                    <option value="o1-preview" />
+                                    <option value="o1-mini" />
+                                    <option value="o3-mini" />
+                                </datalist>
+                                <datalist id="anthropic-models">
+                                    <option value="claude-3-7-sonnet-latest" />
+                                    <option value="claude-3-5-sonnet-latest" />
+                                    <option value="claude-3-5-haiku-latest" />
+                                </datalist>
+                                <datalist id="gemini-models">
+                                    <option value="gemini-2.5-pro" />
+                                    <option value="gemini-2.0-flash" />
+                                    <option value="gemini-1.5-pro" />
+                                    <option value="gemini-1.5-flash" />
+                                </datalist>
+                                <datalist id="deepseek-models">
+                                    <option value="deepseek-chat" />
+                                    <option value="deepseek-reasoner" />
+                                </datalist>
+                                <datalist id="custom-models">
+                                    <option value="custom-model" />
+                                </datalist>
                             </div>
-                        )}
+                        </div>
 
                         <div className="flex items-center space-x-2 pt-2">
                             <input
