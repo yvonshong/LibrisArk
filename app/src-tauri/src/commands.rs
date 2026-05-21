@@ -70,27 +70,6 @@ pub fn rescan_library(state: State<'_, AppState>, app_handle: AppHandle) -> Resu
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let new_paper_ids = scan::scan_directory(std::path::Path::new(&path), &conn).map_err(|e| e.to_string())?;
 
-    let auto_summarize = {
-        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = 'ai_auto_summarize'").map_err(|e| e.to_string())?;
-        match stmt.query_row([], |r| r.get::<_, String>(0)) {
-            Ok(val) => val == "true",
-            Err(_) => false,
-        }
-    };
-
-    if auto_summarize {
-        for paper_id in new_paper_ids {
-            let app_handle_clone = app_handle.clone();
-            tokio::spawn(async move {
-                let app_handle_inner = app_handle_clone.clone();
-                let state = app_handle_clone.state::<AppState>();
-                if let Err(e) = start_copilot_session_internal(&state, app_handle_inner, paper_id.clone()).await {
-                    eprintln!("Failed to start copilot for paper {}: {}", paper_id, e);
-                }
-            });
-        }
-    }
-
     let _ = app_handle.emit("library-update", "rescan-complete");
 
     Ok(())
@@ -121,6 +100,7 @@ pub struct Paper {
     pub one_sentence_summary: Option<String>,
     pub structured_summary: Option<String>,
     pub tags: Vec<String>,
+    pub authors: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,9 +145,9 @@ pub fn get_papers_filtered(
     let map_paper_closure = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Paper> {
         let rel_path: String = row.get(2)?;
         let abs_path = if std::path::Path::new(&rel_path).is_absolute() {
-            rel_path
+            rel_path.replace("\\", "/")
         } else {
-            std::path::Path::new(&library_path).join(&rel_path).to_string_lossy().to_string()
+            std::path::Path::new(&library_path).join(&rel_path).to_string_lossy().replace("\\", "/")
         };
 
         Ok(Paper {
@@ -179,6 +159,7 @@ pub fn get_papers_filtered(
             one_sentence_summary: row.get(5)?,
             structured_summary: row.get(6)?,
             tags: Vec::new(),
+            authors: Vec::new(),
         })
     };
 
@@ -355,9 +336,29 @@ pub fn get_papers_filtered(
             paper_tags_map.entry(paper_id).or_default().push(tag_name);
         }
 
+        let authors_query_str = format!(
+            "SELECT pa.paper_id, a.name
+             FROM paper_authors pa
+             JOIN authors a ON a.id = pa.author_id
+             WHERE pa.paper_id IN ({})",
+            paper_ids.join(",")
+        );
+        let mut author_stmt = conn.prepare(&authors_query_str).map_err(|e| e.to_string())?;
+        let mut author_rows = author_stmt.query([]).map_err(|e| e.to_string())?;
+
+        let mut paper_authors_map: HashMap<String, Vec<String>> = HashMap::new();
+        while let Some(row) = author_rows.next().map_err(|e| e.to_string())? {
+            let paper_id: String = row.get(0).map_err(|e| e.to_string())?;
+            let author_name: String = row.get(1).map_err(|e| e.to_string())?;
+            paper_authors_map.entry(paper_id).or_default().push(author_name);
+        }
+
         for paper in &mut papers {
             if let Some(tags) = paper_tags_map.remove(&paper.id) {
                 paper.tags = tags;
+            }
+            if let Some(authors) = paper_authors_map.remove(&paper.id) {
+                paper.authors = authors;
             }
         }
     }
@@ -555,6 +556,94 @@ pub async fn enrich_metadata(state: State<'_, AppState>) -> Result<u32, String> 
 }
 
 #[tauri::command]
+pub async fn add_paper_tag(state: tauri::State<'_, AppState>, paper_id: String, tag: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    
+    // Insert tag if it doesn't exist
+    conn.execute(
+        "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+        params![&tag],
+    ).map_err(|e| e.to_string())?;
+    
+    // Get tag id
+    let tag_id: i32 = conn.query_row(
+        "SELECT id FROM tags WHERE name = ?1",
+        params![&tag],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    
+    // Insert paper_tag relation
+    conn.execute(
+        "INSERT OR IGNORE INTO paper_tags (paper_id, tag_id) VALUES (?1, ?2)",
+        params![&paper_id, tag_id],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_paper_tag(state: tauri::State<'_, AppState>, paper_id: String, tag: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    
+    let tag_id_result: Result<i32, _> = conn.query_row(
+        "SELECT id FROM tags WHERE name = ?1",
+        params![&tag],
+        |row| row.get(0),
+    );
+    
+    if let Ok(tag_id) = tag_id_result {
+        conn.execute(
+            "DELETE FROM paper_tags WHERE paper_id = ?1 AND tag_id = ?2",
+            params![&paper_id, tag_id],
+        ).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_paper_metadata_manual(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    title: Option<String>,
+    authors: Vec<String>,
+    year: Option<i32>
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    
+    conn.execute(
+        "UPDATE papers SET title = ?1, publish_year = ?2 WHERE id = ?3",
+        params![title, year, &id],
+    ).map_err(|e| e.to_string())?;
+    
+    // Delete existing authors
+    conn.execute(
+        "DELETE FROM paper_authors WHERE paper_id = ?1",
+        params![&id],
+    ).map_err(|e| e.to_string())?;
+    
+    for author in authors {
+        conn.execute(
+            "INSERT OR IGNORE INTO authors (name) VALUES (?1)",
+            params![&author],
+        ).map_err(|e| e.to_string())?;
+        
+        let author_id: i32 = conn.query_row(
+            "SELECT id FROM authors WHERE name = ?1",
+            params![&author],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_authors (paper_id, author_id) VALUES (?1, ?2)",
+            params![&id, author_id],
+        ).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn update_paper_metadata_by_doi(app_handle: tauri::AppHandle, state: tauri::State<'_, AppState>, id: String, doi: String) -> Result<Paper, String> {
     let candidate = metadata::fetch_crossref_by_doi(&doi).await?;
     
@@ -610,7 +699,7 @@ pub async fn update_paper_metadata_by_doi(app_handle: tauri::AppHandle, state: t
     // Refetch the updated paper (we use the same logic as get_papers but for one paper)
     let mut stmt = conn.prepare("SELECT id, title, path, publish_year, doi, abstract, journal FROM papers WHERE id = ?1").map_err(|e| e.to_string())?;
     
-    let row = stmt.query_row(rusqlite::params![id], |row| {
+    let row = stmt.query_row(rusqlite::params![&id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?,
@@ -622,10 +711,18 @@ pub async fn update_paper_metadata_by_doi(app_handle: tauri::AppHandle, state: t
 
     // Get tags
     let mut tags_stmt = conn.prepare("SELECT t.name FROM tags t JOIN paper_tags pt ON t.id = pt.tag_id WHERE pt.paper_id = ?1").map_err(|e| e.to_string())?;
-    let tags_iter = tags_stmt.query_map(rusqlite::params![id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let tags_iter = tags_stmt.query_map(rusqlite::params![&id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
     let mut tags = Vec::new();
     for t in tags_iter {
         if let Ok(t_val) = t { tags.push(t_val); }
+    }
+
+    // Get authors
+    let mut authors_stmt = conn.prepare("SELECT a.name FROM authors a JOIN paper_authors pa ON a.id = pa.author_id WHERE pa.paper_id = ?1").map_err(|e| e.to_string())?;
+    let authors_iter = authors_stmt.query_map(rusqlite::params![&id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let mut authors = Vec::new();
+    for a in authors_iter {
+        if let Ok(a_val) = a { authors.push(a_val); }
     }
 
     use tauri::Emitter;
@@ -640,6 +737,7 @@ pub async fn update_paper_metadata_by_doi(app_handle: tauri::AppHandle, state: t
         one_sentence_summary: None,
         structured_summary: None,
         tags,
+        authors,
     })
 }
 
@@ -726,9 +824,9 @@ pub fn preview_rename(
         };
 
         let abs_old_path = if std::path::Path::new(&old_path).is_absolute() {
-            old_path.clone()
+            old_path.clone().replace("\\", "/")
         } else {
-            std::path::Path::new(&library_path).join(&old_path).to_string_lossy().to_string()
+            std::path::Path::new(&library_path).join(&old_path).to_string_lossy().replace("\\", "/")
         };
 
         let rendered_name = render_template(
@@ -984,7 +1082,7 @@ pub async fn ask_paper(
 
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        ensure_chunks_for_paper(&conn, &paper_id, &abs_path)?;
+        ensure_chunks_for_paper(&conn, &paper_id)?;
     }
 
     let query = if let Some(sel) = selected_text.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -1134,7 +1232,7 @@ fn rank_snippets_from_chunks(chunks: &[String], question: &str, top_k: usize) ->
         .collect()
 }
 
-fn ensure_chunks_for_paper(conn: &rusqlite::Connection, paper_id: &str, path: &str) -> Result<(), String> {
+fn ensure_chunks_for_paper(conn: &rusqlite::Connection, paper_id: &str) -> Result<(), String> {
     let mut count_stmt = conn
         .prepare("SELECT COUNT(1) FROM paper_chunks WHERE paper_id = ?1")
         .map_err(|e| e.to_string())?;
@@ -1146,18 +1244,7 @@ fn ensure_chunks_for_paper(conn: &rusqlite::Connection, paper_id: &str, path: &s
         return Ok(());
     }
 
-    let text = pdf_extract::extract_text(std::path::Path::new(path)).map_err(|e| e.to_string())?;
-    let chunks = split_text_into_chunks(&text, 1000);
-
-    for (idx, chunk) in chunks.into_iter().enumerate() {
-        conn.execute(
-            "INSERT INTO paper_chunks (paper_id, chunk_index, content) VALUES (?1, ?2, ?3)",
-            params![paper_id, idx as i64, chunk],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+    Err("PDF text is currently being extracted in the background by pdf.js. Please wait a moment.".to_string())
 }
 
 fn split_text_into_chunks(text: &str, target_len: usize) -> Vec<String> {
@@ -1259,28 +1346,78 @@ pub fn get_onedrive_sync_folder(state: State<'_, AppState>) -> Result<Option<Str
 }
 
 #[tauri::command]
-pub async fn sync_onedrive(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn get_onedrive_status(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.onedrive.has_token().await)
+}
+
+use std::pin::Pin;
+use std::future::Future;
+
+fn list_remote_files_recursive<'a>(
+    client: &'a crate::onedrive::OneDriveClient,
+    access_token: &'a str,
+    base_folder: &'a str,
+    sub_path: &'a str,
+    remote_files: &'a mut std::collections::HashMap<String, (crate::onedrive::OneDriveItem, chrono::DateTime<chrono::Utc>)>,
+) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        let current_folder = if sub_path.is_empty() {
+            base_folder.to_string()
+        } else {
+            format!("{}/{}", base_folder, sub_path)
+        };
+        
+        let remote_items = client.list_files(access_token, &current_folder).await?;
+        for item in remote_items {
+            if item.file.is_some() {
+                let remote_modified = chrono::DateTime::parse_from_rfc3339(&item.last_modified)
+                    .map_err(|e| e.to_string())?
+                    .with_timezone(&chrono::Utc);
+                let rel_path = if sub_path.is_empty() {
+                    item.name.clone()
+                } else {
+                    format!("{}/{}", sub_path, item.name)
+                };
+                remote_files.insert(rel_path, (item, remote_modified));
+            } else if item.folder.is_some() {
+                let next_sub_path = if sub_path.is_empty() {
+                    item.name.clone()
+                } else {
+                    format!("{}/{}", sub_path, item.name)
+                };
+                list_remote_files_recursive(client, access_token, base_folder, &next_sub_path, remote_files).await?;
+            }
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn sync_onedrive(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _ = app_handle.emit("sync-progress", "Initializing sync...");
     let library_path = get_library_path(state.clone())?.ok_or("Library path not configured")?;
     let sync_folder = get_onedrive_sync_folder(state.clone())?.ok_or("OneDrive sync folder not configured")?;
     let client_id = get_onedrive_client_id(state.clone())?.unwrap_or_else(|| DEFAULT_ONEDRIVE_CLIENT_ID.to_string());
     let client_secret = get_onedrive_client_secret(state.clone())?;
 
+    let _ = app_handle.emit("sync-progress", "Getting access token...");
     let access_token = state.onedrive.get_access_token(&client_id, client_secret.as_deref()).await?;
     
     // 1. List local files
     let local_dir = std::path::Path::new(&library_path);
     let mut local_files = std::collections::HashMap::new();
+    let _ = app_handle.emit("sync-progress", "Checking local files...");
     println!("Sync: Checking local directory: {:?}", local_dir);
     if local_dir.is_dir() {
-        for entry in std::fs::read_dir(local_dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+        for entry in walkdir::WalkDir::new(local_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if let Ok(rel_path) = path.strip_prefix(local_dir) {
+                    let rel_path_str = rel_path.to_string_lossy().replace("\\", "/");
                     let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
                     let modified = metadata.modified().map_err(|e| e.to_string())?;
                     let modified_dt: chrono::DateTime<chrono::Utc> = modified.into();
-                    local_files.insert(name.to_string(), (path, modified_dt));
+                    local_files.insert(rel_path_str, (path.to_path_buf(), modified_dt));
                 }
             }
         }
@@ -1288,57 +1425,49 @@ pub async fn sync_onedrive(state: State<'_, AppState>) -> Result<(), String> {
     println!("Sync: Found {} local files", local_files.len());
 
     // 2. List remote files
+    let _ = app_handle.emit("sync-progress", "Fetching remote files from OneDrive...");
     println!("Sync: Fetching remote files from: {}", sync_folder);
-    let remote_items = state.onedrive.list_files(&access_token, &sync_folder).await?;
     let mut remote_files = std::collections::HashMap::new();
-    for item in remote_items {
-        if item.file.is_some() {
-            let remote_modified = chrono::DateTime::parse_from_rfc3339(&item.last_modified)
-                .map_err(|e| e.to_string())?
-                .with_timezone(&chrono::Utc);
-            remote_files.insert(item.name.clone(), (item, remote_modified));
-        } else {
-            println!("Sync: Skipping non-file item: {}", item.name);
-        }
-    }
+    list_remote_files_recursive(&state.onedrive, &access_token, &sync_folder, "", &mut remote_files).await?;
     println!("Sync: Found {} remote files", remote_files.len());
 
     // 3. Compare and sync
     // Local to Remote
-    for (name, (path, local_mtime)) in &local_files {
-        match remote_files.get(name) {
-            Some((_remote_item, remote_mtime)) => {
-                if local_mtime > remote_mtime {
-                    // Local is newer, upload
-                    let remote_path = format!("{}/{}", sync_folder, name);
-                    state.onedrive.upload_file(&access_token, path, &remote_path).await?;
-                }
-            }
-            None => {
-                // Not in remote, upload
-                let remote_path = format!("{}/{}", sync_folder, name);
-                state.onedrive.upload_file(&access_token, path, &remote_path).await?;
-            }
+    let mut upload_count = 0;
+    for (rel_path, (path, local_mtime)) in &local_files {
+        let should_upload = match remote_files.get(rel_path) {
+            Some((_remote_item, remote_mtime)) => local_mtime > remote_mtime,
+            None => true,
+        };
+        
+        if should_upload {
+            upload_count += 1;
+            let _ = app_handle.emit("sync-progress", &format!("Uploading {}...", rel_path));
+            let remote_path = format!("{}/{}", sync_folder, rel_path);
+            state.onedrive.upload_file(&access_token, path, &remote_path).await?;
         }
     }
 
     // Remote to Local
-    for (name, (item, remote_mtime)) in &remote_files {
-        match local_files.get(name) {
-            Some((_local_path, local_mtime)) => {
-                if remote_mtime > local_mtime {
-                    // Remote is newer, download
-                    let local_path = local_dir.join(name);
-                    state.onedrive.download_file(&access_token, &item.id, &local_path).await?;
-                }
+    let mut download_count = 0;
+    for (rel_path, (item, remote_mtime)) in &remote_files {
+        let should_download = match local_files.get(rel_path) {
+            Some((_local_path, local_mtime)) => remote_mtime > local_mtime,
+            None => true,
+        };
+        
+        if should_download {
+            download_count += 1;
+            let _ = app_handle.emit("sync-progress", &format!("Downloading {}...", rel_path));
+            let local_path = local_dir.join(rel_path);
+            if let Some(parent) = local_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            None => {
-                // Not in local, download
-                let local_path = local_dir.join(name);
-                state.onedrive.download_file(&access_token, &item.id, &local_path).await?;
-            }
+            state.onedrive.download_file(&access_token, &item.id, &local_path).await?;
         }
     }
+
+    let _ = app_handle.emit("sync-progress", &format!("Sync complete! Uploaded {}, Downloaded {}.", upload_count, download_count));
 
     Ok(())
 }
@@ -1522,17 +1651,31 @@ pub async fn start_copilot_session_internal(state: &AppState, app_handle: AppHan
         resolve_absolute_path(&conn, &path)?
     };
 
-    if !std::path::Path::new(&abs_path).exists() {
-        return Err(format!("PDF file not found at: {}", abs_path));
-    }
+    let full_text = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT content FROM paper_chunks WHERE paper_id = ?1 ORDER BY chunk_index ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&paper_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        
+        let mut text = String::new();
+        for row in rows {
+            if let Ok(chunk) = row {
+                text.push_str(&chunk);
+                text.push_str("\n\n");
+                if text.len() > 8000 {
+                    break;
+                }
+            }
+        }
+        text
+    };
 
-    let full_text = pdf_extract::extract_text(std::path::Path::new(&abs_path))
-        .map_err(|e| format!("Failed to extract PDF text: {}", e))?;
+    if full_text.trim().is_empty() {
+        return Err("PDF text is not yet available or extracted.".to_string());
+    }
     
     let sample_len = std::cmp::min(full_text.len(), 8000);
-    if sample_len == 0 {
-        return Err("PDF file has no readable text".to_string());
-    }
     let sample_text = &full_text[..sample_len];
 
     let ai_settings = {
@@ -1633,3 +1776,167 @@ pub async fn start_copilot_session_internal(state: &AppState, app_handle: AppHan
 
     Ok(())
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ReleaseInfo {
+    pub tag_name: String,
+    pub html_url: String,
+    pub body: String,
+}
+
+#[tauri::command]
+pub fn get_app_version() -> String {
+    env!("APP_GIT_VERSION").to_string()
+}
+
+#[tauri::command]
+pub async fn check_for_updates() -> Result<Option<ReleaseInfo>, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get("https://api.github.com/repos/yvonshong/LibrisArk/releases/latest")
+        .header("User-Agent", "LibrisArk")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if res.status().is_success() {
+        let release: ReleaseInfo = res.json().await.map_err(|e| e.to_string())?;
+        
+        let current_version = env!("APP_GIT_VERSION");
+        let remote_version = release.tag_name.trim_start_matches('v');
+        
+        let clean_current = current_version.trim_start_matches('v').split('-').next().unwrap_or(current_version);
+        let clean_remote = remote_version.split('-').next().unwrap_or(remote_version);
+        
+        let current_parts: Vec<u32> = clean_current.split('.').filter_map(|s| s.parse().ok()).collect();
+        let remote_parts: Vec<u32> = clean_remote.split('.').filter_map(|s| s.parse().ok()).collect();
+        
+        let mut is_newer = false;
+        for i in 0..std::cmp::max(current_parts.len(), remote_parts.len()) {
+            let curr = current_parts.get(i).copied().unwrap_or(0);
+            let rem = remote_parts.get(i).copied().unwrap_or(0);
+            if rem > curr {
+                is_newer = true;
+                break;
+            } else if rem < curr {
+                break;
+            }
+        }
+        
+        if is_newer {
+            return Ok(Some(release));
+        }
+    }
+    
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn get_unparsed_papers(state: State<'_, AppState>) -> Result<Vec<Paper>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let library_path = get_library_path_internal(&conn)?.unwrap_or_default();
+    
+    let mut stmt = conn.prepare(
+        "SELECT id, title, path, publish_year, doi, one_sentence_summary, structured_summary
+         FROM papers
+         WHERE id NOT IN (SELECT DISTINCT paper_id FROM paper_chunks)
+         ORDER BY created_at DESC
+         LIMIT 50"
+    ).map_err(|e| e.to_string())?;
+
+    let iter = stmt.query_map([], |row| {
+        let rel_path: String = row.get(2)?;
+        let abs_path = if std::path::Path::new(&rel_path).is_absolute() {
+            rel_path.replace("\\", "/")
+        } else {
+            std::path::Path::new(&library_path).join(&rel_path).to_string_lossy().replace("\\", "/")
+        };
+
+        Ok(Paper {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            path: abs_path,
+            year: row.get(3)?,
+            doi: row.get(4)?,
+            one_sentence_summary: row.get(5)?,
+            structured_summary: row.get(6)?,
+            tags: Vec::new(),
+            authors: Vec::new(),
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut papers = Vec::new();
+    for p in iter {
+        if let Ok(paper) = p {
+            papers.push(paper);
+        }
+    }
+    Ok(papers)
+}
+
+#[tauri::command]
+pub fn check_paper_parsed(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT COUNT(*) FROM paper_chunks WHERE paper_id = ?1").map_err(|e| e.to_string())?;
+    let count: i32 = stmt.query_row([&id], |row| row.get(0)).unwrap_or(0);
+    Ok(count > 0)
+}
+
+#[tauri::command]
+pub fn read_local_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_paper_text(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    paper_id: String,
+    full_text: String,
+    title: Option<String>,
+    doi: Option<String>
+) -> Result<(), String> {
+    let chunks = split_text_into_chunks(&full_text, 1000);
+    
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        
+        conn.execute(
+            "UPDATE papers SET title = COALESCE(NULLIF(title, 'Unknown'), ?1), doi = COALESCE(NULLIF(doi, ''), ?2) WHERE id = ?3",
+            params![title, doi, paper_id],
+        ).map_err(|e| e.to_string())?;
+
+        for (idx, chunk) in chunks.into_iter().enumerate() {
+            conn.execute(
+                "INSERT OR IGNORE INTO paper_chunks (paper_id, chunk_index, content) VALUES (?1, ?2, ?3)",
+                params![&paper_id, idx as i64, chunk],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+
+
+    let auto_summarize = {
+        let conn_guard = state.db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn_guard.prepare("SELECT value FROM settings WHERE key = 'ai_auto_summarize'").unwrap();
+        match stmt.query_row([], |r| r.get::<_, String>(0)) {
+            Ok(val) => val == "true",
+            Err(_) => false,
+        }
+    };
+
+    if auto_summarize {
+        let app_handle_clone = app_handle.clone();
+        let pid = paper_id.clone();
+        tokio::spawn(async move {
+            let app_handle_inner = app_handle_clone.clone();
+            let state_inner = app_handle_clone.state::<AppState>();
+            if let Err(e) = start_copilot_session_internal(&state_inner, app_handle_inner, pid.clone()).await {
+                eprintln!("Failed to start copilot for paper {}: {}", pid, e);
+            }
+        });
+    }
+
+    Ok(())
+}
+

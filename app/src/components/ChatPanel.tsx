@@ -23,6 +23,16 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
     const [isEditingDoi, setIsEditingDoi] = useState(false);
     const [editDoiValue, setEditDoiValue] = useState("");
     const [isUpdatingMetadata, setIsUpdatingMetadata] = useState(false);
+    
+    // Manual editing state
+    const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+    const [editTitle, setEditTitle] = useState("");
+    const [editYear, setEditYear] = useState("");
+    const [editAuthors, setEditAuthors] = useState("");
+    const [isSavingMetadata, setIsSavingMetadata] = useState(false);
+    const [isAddingTag, setIsAddingTag] = useState(false);
+    const [newTagInput, setNewTagInput] = useState("");
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
@@ -49,7 +59,7 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
                 setMessages(history.filter(m => m.role !== 'system')); // Hide system prompt from UI
             })
             .catch((error) => console.error("Failed to load chat history:", error));
-    }, [selectedPaper]);
+    }, [selectedPaper?.id]);
 
     useEffect(() => {
         if (externalSelectedText) {
@@ -147,6 +157,60 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
         } finally {
             setIsUpdatingMetadata(false);
         }
+    };
+
+    const handleSaveMetadata = async () => {
+        if (!selectedPaper) return;
+        setIsSavingMetadata(true);
+        try {
+            const yearNum = editYear.trim() ? parseInt(editYear) : null;
+            const authorsList = editAuthors.split(",").map(a => a.trim()).filter(a => a.length > 0);
+            await invoke("update_paper_metadata_manual", {
+                id: selectedPaper.id,
+                title: editTitle.trim() || null,
+                authors: authorsList,
+                year: yearNum
+            });
+            setIsEditingMetadata(false);
+            if (onPaperUpdated) {
+                onPaperUpdated({
+                    ...selectedPaper,
+                    title: editTitle.trim() || null,
+                    authors: authorsList,
+                    year: yearNum
+                });
+            }
+        } catch (e) {
+            console.error("Failed to update metadata:", e);
+        } finally {
+            setIsSavingMetadata(false);
+        }
+    };
+
+    const handleAddTag = async () => {
+        if (!selectedPaper || !newTagInput.trim()) return;
+        const tag = newTagInput.trim();
+        try {
+            await invoke("add_paper_tag", { paperId: selectedPaper.id, tag });
+            if (onPaperUpdated) {
+                const currentTags = selectedPaper.tags || [];
+                if (!currentTags.includes(tag)) {
+                    onPaperUpdated({ ...selectedPaper, tags: [...currentTags, tag] });
+                }
+            }
+            setNewTagInput("");
+            setIsAddingTag(false);
+        } catch (e) { console.error(e); }
+    };
+
+    const handleRemoveTag = async (tag: string) => {
+        if (!selectedPaper) return;
+        try {
+            await invoke("remove_paper_tag", { paperId: selectedPaper.id, tag });
+            if (onPaperUpdated) {
+                onPaperUpdated({ ...selectedPaper, tags: (selectedPaper.tags || []).filter(t => t !== tag) });
+            }
+        } catch (e) { console.error(e); }
     };
 
     return (
@@ -389,15 +453,76 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
                             </div>
                         ) : (
                             <div className="space-y-4 text-sm">
-                                <div>
-                                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">Title</h4>
-                                    <p className="font-medium text-neutral-900 dark:text-neutral-100">{selectedPaper.title || "Untitled"}</p>
+                                <div className="flex justify-between items-center border-b border-neutral-200 dark:border-neutral-800 pb-2">
+                                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">Basic Info</h4>
+                                    {!isEditingMetadata ? (
+                                        <button onClick={() => {
+                                            setEditTitle(selectedPaper.title || "");
+                                            setEditYear(selectedPaper.year?.toString() || "");
+                                            setEditAuthors((selectedPaper.authors || []).join(", "));
+                                            setIsEditingMetadata(true);
+                                        }} className="p-1 text-neutral-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors" title="Edit Metadata">
+                                            <Edit2 size={12} />
+                                        </button>
+                                    ) : (
+                                        <div className="flex gap-1">
+                                            <button onClick={handleSaveMetadata} disabled={isSavingMetadata} className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded disabled:opacity-50">
+                                                <Check size={12} />
+                                            </button>
+                                            <button onClick={() => setIsEditingMetadata(false)} disabled={isSavingMetadata} className="p-1 text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 rounded disabled:opacity-50">
+                                                <X size={12} />
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">Year</h4>
-                                        <p className="text-neutral-800 dark:text-neutral-200">{selectedPaper.year || "Unknown"}</p>
+                                
+                                {isEditingMetadata ? (
+                                    <div className="space-y-3 animate-fade-in">
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1 block">Title</label>
+                                            <textarea 
+                                                value={editTitle}
+                                                onChange={e => setEditTitle(e.target.value)}
+                                                className="w-full text-xs px-2 py-1.5 border rounded border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 outline-none focus:border-blue-500 resize-none h-16"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1 block">Authors</label>
+                                            <input 
+                                                value={editAuthors}
+                                                onChange={e => setEditAuthors(e.target.value)}
+                                                placeholder="Comma separated"
+                                                className="w-full text-xs px-2 py-1 border rounded border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1 block">Year</label>
+                                            <input 
+                                                value={editYear}
+                                                onChange={e => setEditYear(e.target.value)}
+                                                type="number"
+                                                className="w-full text-xs px-2 py-1 border rounded border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 outline-none focus:border-blue-500"
+                                            />
+                                        </div>
                                     </div>
+                                ) : (
+                                    <>
+                                        <div>
+                                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">Title</h4>
+                                            <p className="font-medium text-neutral-900 dark:text-neutral-100">{selectedPaper.title || "Untitled"}</p>
+                                        </div>
+                                        <div>
+                                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">Authors</h4>
+                                            <p className="text-neutral-800 dark:text-neutral-200">
+                                                {selectedPaper.authors && selectedPaper.authors.length > 0 ? selectedPaper.authors.join(", ") : "Unknown"}
+                                            </p>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">Year</h4>
+                                                <p className="text-neutral-800 dark:text-neutral-200">{selectedPaper.year || "Unknown"}</p>
+                                            </div>
+
                                     <div>
                                         <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1 flex items-center gap-1">
                                             DOI
@@ -442,22 +567,64 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
                                         )}
                                     </div>
                                 </div>
-                                <div>
-                                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">File Path</h4>
-                                    <p className="text-xs text-neutral-600 dark:text-neutral-400 break-all bg-neutral-100 dark:bg-neutral-800 p-2 rounded">{selectedPaper.path}</p>
-                                </div>
-                                {(selectedPaper.tags?.length || 0) > 0 && (
+                                {!isEditingMetadata && (
                                     <div>
-                                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">Tags</h4>
-                                        <div className="flex flex-wrap gap-1">
-                                            {selectedPaper.tags.map(tag => (
-                                                <span key={tag} className="text-xs bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-700">
-                                                    {tag}
-                                                </span>
-                                            ))}
-                                        </div>
+                                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">File Path</h4>
+                                        <p className="text-xs text-neutral-600 dark:text-neutral-400 break-all bg-neutral-100 dark:bg-neutral-800 p-2 rounded">{selectedPaper.path}</p>
                                     </div>
                                 )}
+                                </>
+                                )}
+                                
+                                <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4 mt-4">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">Tags</h4>
+                                        <button 
+                                            onClick={() => setIsAddingTag(!isAddingTag)} 
+                                            className="p-1 text-neutral-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors flex items-center gap-1 text-[10px] font-medium"
+                                        >
+                                            <Plus size={10} /> Add
+                                        </button>
+                                    </div>
+                                    
+                                    {isAddingTag && (
+                                        <div className="flex gap-1 mb-2">
+                                            <input
+                                                type="text"
+                                                value={newTagInput}
+                                                onChange={e => setNewTagInput(e.target.value)}
+                                                onKeyDown={e => {
+                                                    if (e.key === 'Enter') handleAddTag();
+                                                    if (e.key === 'Escape') setIsAddingTag(false);
+                                                }}
+                                                placeholder="New tag..."
+                                                autoFocus
+                                                className="flex-1 min-w-0 text-xs px-2 py-1 border rounded border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 outline-none focus:border-blue-500"
+                                            />
+                                            <button onClick={handleAddTag} className="px-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs">
+                                                Add
+                                            </button>
+                                        </div>
+                                    )}
+                                    
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {(selectedPaper.tags || []).length === 0 && !isAddingTag && (
+                                            <p className="text-xs text-neutral-400 italic">No tags added</p>
+                                        )}
+                                        {(selectedPaper.tags || []).map(tag => (
+                                            <span key={tag} className="group text-xs bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-700 flex items-center gap-1">
+                                                {tag}
+                                                <button 
+                                                    onClick={() => handleRemoveTag(tag)}
+                                                    className="opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all p-0.5"
+                                                    title="Remove tag"
+                                                >
+                                                    <X size={10} />
+                                                </button>
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
                             </div>
                         )}
                     </div>

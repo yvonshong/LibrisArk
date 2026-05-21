@@ -7,6 +7,7 @@ export interface Paper {
     oneSentenceSummary: string | null;
     structuredSummary: string | null;
     tags: string[];
+    authors: string[];
 }
 
 export type LibraryFilterKind = "all" | "year" | "author" | "tag";

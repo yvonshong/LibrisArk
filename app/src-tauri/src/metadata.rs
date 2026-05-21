@@ -69,16 +69,6 @@ struct CrossrefDateParts {
     date_parts: Vec<Vec<i32>>,
 }
 
-pub fn extract_pdf_doi_and_title(path: &std::path::Path) -> (Option<String>, Option<String>) {
-    let Ok(text) = pdf_extract::extract_text(path) else {
-        return (None, None);
-    };
-
-    let doi = extract_doi(&text);
-    let title = infer_title(&text);
-    (doi, title)
-}
-
 pub fn extract_doi(text: &str) -> Option<String> {
     let Ok(doi_re) = Regex::new(r"(?i)10\.\d{4,9}/[-._;()/:A-Z0-9]+") else {
         return None;

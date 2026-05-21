@@ -25,3 +25,23 @@ body {
   background-color: rgba(255, 235, 59, 0.5);
   color: inherit;
 }
+
+/* Force hardware accelerated compositing on PDF pages and scrolling container */
+.react-pdf__Page__canvas {
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.react-pdf__Page__textContent,
+.react-pdf__Page__annotations {
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.scroll-gpu {
+  will-change: transform, scroll-position;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+}

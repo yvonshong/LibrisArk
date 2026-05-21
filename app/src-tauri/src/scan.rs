@@ -103,14 +103,12 @@ pub fn scan_directory(path: &Path, conn: &Connection) -> Result<Vec<String>, Str
         }
 
         // New paper
-        let (detected_doi, detected_title) = metadata::extract_pdf_doi_and_title(file_path);
-        let title = detected_title.unwrap_or_else(|| {
-            file_path
+        let detected_doi: Option<String> = None;
+        let title = file_path
                 .file_stem()
                 .and_then(|n| n.to_str())
                 .unwrap_or("Unknown")
-                .to_string()
-        });
+                .to_string();
         let id = Uuid::new_v4().to_string();
 
         conn.execute(

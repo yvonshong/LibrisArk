@@ -1,12 +1,14 @@
-import { Library, Tag, Settings, Search } from "lucide-react";
+import { Library, Tag, Settings, Search, AlertCircle } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import logo from "../assets/logo.png";
 
 interface SidebarProps {
     currentView: "library" | "tags" | "search" | "settings";
     onViewChange: (view: "library" | "tags" | "search" | "settings") => void;
+    updateAvailable?: { tag_name: string; html_url: string; body: string } | null;
 }
 
-export function Sidebar({ currentView, onViewChange }: SidebarProps) {
+export function Sidebar({ currentView, onViewChange, updateAvailable }: SidebarProps) {
     return (
         <div className="h-full bg-neutral-50 dark:bg-neutral-900 flex flex-col items-center py-4 w-14 border-r border-neutral-200 dark:border-neutral-800">
             <div className="mb-8">
@@ -34,7 +36,20 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
                 />
             </nav>
 
-            <div className="mt-auto">
+            <div className="mt-auto flex flex-col items-center space-y-4">
+                {updateAvailable && (
+                    <button
+                        onClick={() => openUrl(updateAvailable.html_url)}
+                        title={`Update Available: ${updateAvailable.tag_name}`}
+                        className="text-red-500 hover:text-red-600 relative p-2 rounded-lg hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
+                    >
+                        <AlertCircle size={20} />
+                        <span className="absolute top-1 right-1 flex h-2.5 w-2.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                        </span>
+                    </button>
+                )}
                 <NavItem
                     icon={<Settings size={20} />}
                     title="Settings"

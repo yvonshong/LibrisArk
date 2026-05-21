@@ -1,17 +1,105 @@
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
 import { ChatPanel } from "./ChatPanel";
 import { Paper, Note } from "../types";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { useState, useEffect, useRef } from "react";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { useState, useEffect, useRef, useMemo, memo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import { extractTextFromPdf, extractDoiFromText, inferTitleFromText } from "../utils/pdfExtractor";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
-// Configure PDF.js worker using Vite's URL handling for offline support
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
+  import.meta.url
 ).toString();
+
+interface LazyPageProps {
+    pageNumber: number;
+    pdfScale: number;
+    pageRatiosRef: React.MutableRefObject<Record<number, number>>;
+}
+
+const LazyPage = memo(function LazyPage({ pageNumber, pdfScale, pageRatiosRef }: LazyPageProps) {
+    const [isVisible, setIsVisible] = useState(false);
+    const [isRendered, setIsRendered] = useState(false);
+    const [ratio, setRatio] = useState(() => pageRatiosRef.current[pageNumber] || 1.414);
+    const elementRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                const isPageIntersecting = entry.isIntersecting;
+                setIsVisible(isPageIntersecting);
+                if (!isPageIntersecting) {
+                    setIsRendered(false);
+                }
+            },
+            {
+                rootMargin: "1200px 0px", // Preloads/keeps rendered ~1.5 pages above/below viewport
+            }
+        );
+
+        if (elementRef.current) {
+            observer.observe(elementRef.current);
+        }
+
+        return () => {
+            observer.disconnect();
+        };
+    }, []);
+
+    const height = 800 * pdfScale * ratio;
+    const width = 800 * pdfScale;
+
+    const handlePageLoadSuccess = (page: any) => {
+        if (page.width && page.height) {
+            const newRatio = page.height / page.width;
+            pageRatiosRef.current[pageNumber] = newRatio;
+            setRatio(newRatio);
+        }
+    };
+
+    return (
+        <div
+            ref={elementRef}
+            style={{
+                width: `${width}px`,
+                height: `${height}px`,
+                contentVisibility: "auto",
+                containIntrinsicSize: `${width}px ${height}px`,
+                transform: 'translateZ(0)', // Force GPU composite layer promotion
+            }}
+            className="bg-white shadow-sm mb-4 relative flex items-center justify-center overflow-hidden"
+        >
+            {/* Optimized canvas container (no transitional layout changes or composite rendering blocks) */}
+            {isVisible && (
+                <div className="w-full h-full">
+                    <Page
+                        pageNumber={pageNumber}
+                        renderAnnotationLayer
+                        renderTextLayer
+                        width={width}
+                        devicePixelRatio={Math.min(window.devicePixelRatio, 1.5)} // Cap high-DPI scaling to prevent rendering lag
+                        onLoadSuccess={handlePageLoadSuccess}
+                        onRenderSuccess={() => setIsRendered(true)}
+                        className="bg-white"
+                        loading={null} // Suppress react-pdf default text loader
+                    />
+                </div>
+            )}
+
+            {/* Premium Loading Skeleton */}
+            {!isRendered && (
+                <div className="absolute inset-0 bg-white dark:bg-neutral-900 flex flex-col items-center justify-center p-6 space-y-4">
+                    <div className="w-10 h-10 rounded-full border-4 border-neutral-200 dark:border-neutral-800 border-t-blue-500 animate-spin" />
+                    <div className="text-neutral-400 dark:text-neutral-500 select-none text-sm font-medium animate-pulse">
+                        Rendering Page {pageNumber}...
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+});
 
 interface ReaderProps {
     selectedPaper: Paper | null;
@@ -24,7 +112,109 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
     const [selectedText, setSelectedText] = useState("");
     const [scale, setScale] = useState(1.0);
     const [pdfScale, setPdfScale] = useState(1.0);
+    const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const pageRatiosRef = useRef<Record<number, number>>({});
+
+    const paperPath = selectedPaper?.path;
+    const paperId = selectedPaper?.id;
+    const selectedPaperRef = useRef(selectedPaper);
+
+    useEffect(() => {
+        selectedPaperRef.current = selectedPaper;
+    }, [selectedPaper]);
+
+    // Load PDF as ArrayBuffer using Tauri asset protocol + fetch
+    useEffect(() => {
+        pageRatiosRef.current = {};
+
+        if (!paperPath) {
+            setPdfData(null);
+            return;
+        }
+
+        let isMounted = true;
+        const fileUrl = convertFileSrc(paperPath);
+        
+        fetch(fileUrl)
+            .then((res) => {
+                if (!res.ok) {
+                    throw new Error(`Failed to fetch file via asset protocol: HTTP ${res.status}`);
+                }
+                return res.arrayBuffer();
+            })
+            .then((buffer) => {
+                if (isMounted) {
+                    setPdfData(buffer);
+                }
+            })
+            .catch((err) => {
+                console.error("Failed to load PDF via asset protocol fetch:", err);
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, [paperPath]);
+
+    // Memoize the document file object to keep references stable across renders
+    const documentFile = useMemo(() => {
+        return pdfData ? { data: pdfData } : null;
+    }, [pdfData]);
+
+    // On-demand text extraction
+    useEffect(() => {
+        if (!paperId || !pdfData) return;
+        
+        let isMounted = true;
+        const checkAndExtract = async () => {
+            try {
+                const isParsed = await invoke<boolean>("check_paper_parsed", { id: paperId });
+                if (!isParsed && isMounted) {
+                    console.log("Paper not parsed, extracting text...", paperId);
+                    const fullText = await extractTextFromPdf(new Uint8Array(pdfData));
+                    if (isMounted) {
+                        const currentPaper = selectedPaperRef.current;
+                        if (!currentPaper) return;
+
+                        let title = null;
+                        let doi = null;
+                        if (!currentPaper.doi) {
+                            doi = extractDoiFromText(fullText);
+                        }
+                        if (currentPaper.title === 'Unknown' || !currentPaper.title) {
+                            title = inferTitleFromText(fullText);
+                        }
+                        
+                        await invoke("save_paper_text", {
+                            paperId: paperId,
+                            fullText: fullText,
+                            title,
+                            doi
+                        });
+                        console.log("Text extraction complete and saved.");
+                        
+                        const finalTitle = title || currentPaper.title;
+                        const finalDoi = doi || currentPaper.doi;
+                        if (onPaperUpdated && (finalTitle !== currentPaper.title || finalDoi !== currentPaper.doi)) {
+                            onPaperUpdated({
+                                ...currentPaper,
+                                title: finalTitle,
+                                doi: finalDoi,
+                            });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to check/extract paper text:", err);
+            }
+        };
+        
+        checkAndExtract();
+        return () => {
+            isMounted = false;
+        };
+    }, [paperId, pdfData, onPaperUpdated]);
 
     // Debounce pdfScale to prevent flickering on continuous zoom
     useEffect(() => {
@@ -38,7 +228,7 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
     const [startPan, setStartPan] = useState({ x: 0, y: 0 });
     const [scrollPan, setScrollPan] = useState({ left: 0, top: 0 });
 
-    // Handle Wheel Zoom (depends on selectedPaper so it binds correctly when paper loads)
+    // Handle Wheel Zoom (depends on paperId so it binds correctly when paper loads)
     useEffect(() => {
         const container = containerRef.current;
         if (!container) return;
@@ -56,7 +246,7 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
         return () => {
             container.removeEventListener('wheel', handleWheel);
         };
-    }, [selectedPaper]);
+    }, [paperId]);
 
     // Handle Keyboard Zoom
     useEffect(() => {
@@ -175,10 +365,16 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
         _setPageNumber(1);
     }
 
+    const options = useMemo(() => ({
+        cMapUrl: '/cmaps/',
+        cMapPacked: true,
+        standardFontDataUrl: '/standard_fonts/',
+    }), []);
+
     return (
         <div className="h-full w-full bg-neutral-100 dark:bg-neutral-950 flex">
             <PanelGroup orientation="horizontal" className="h-full w-full">
-                <Panel defaultSize="70" minSize="50" className="h-full relative overflow-auto">
+                <Panel defaultSize="70" minSize="50" className="h-full relative overflow-auto scroll-gpu">
                     {selectedPaper ? (
                         <div 
                             ref={containerRef} 
@@ -203,23 +399,27 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
                                     transition: scale === pdfScale ? 'none' : 'transform 0.05s ease-out'
                                 }}
                             >
-                                <Document
-                                    file={convertFileSrc(selectedPaper.path)}
-                                    onLoadSuccess={onDocumentLoadSuccess}
-                                    className="shadow-lg flex flex-col gap-4"
-                                    loading={<div className="p-8 text-neutral-500">Loading PDF...</div>}
-                                >
-                                    {Array.from(new Array(numPages || 0), (_, index) => (
-                                        <Page
-                                            key={`page_${index + 1}`}
-                                            pageNumber={index + 1}
-                                            renderAnnotationLayer
-                                            renderTextLayer
-                                            width={800 * pdfScale} // Apply debounced scale to react-pdf to prevent re-rendering flickers
-                                            className="bg-white shadow-sm"
-                                        />
-                                    ))}
-                                </Document>
+                                {documentFile ? (
+                                    <Document
+                                        file={documentFile}
+                                        options={options}
+                                        onLoadSuccess={onDocumentLoadSuccess}
+                                        className="shadow-lg flex flex-col gap-4"
+                                        loading={<div className="p-8 text-neutral-500">Loading PDF...</div>}
+                                        error={<div className="p-8 text-red-500">Failed to load PDF.</div>}
+                                    >
+                                        {Array.from(new Array(numPages || 0), (_, index) => (
+                                            <LazyPage
+                                                key={`page_${index + 1}`}
+                                                pageNumber={index + 1}
+                                                pdfScale={pdfScale}
+                                                pageRatiosRef={pageRatiosRef}
+                                            />
+                                        ))}
+                                    </Document>
+                                ) : (
+                                    <div className="p-8 text-neutral-500">Loading PDF data from disk...</div>
+                                )}
                             </div>
                         </div>
                     ) : (

@@ -34,10 +34,32 @@ pub struct OneDriveClient {
 
 impl OneDriveClient {
     pub fn new() -> Self {
+        let mut initial_token = None;
+        if let Ok(entry) = keyring::Entry::new("librisark", "onedrive_token") {
+            if let Ok(token_str) = entry.get_password() {
+                if let Ok(token) = serde_json::from_str::<OneDriveToken>(&token_str) {
+                    initial_token = Some(token);
+                }
+            }
+        }
+        
         Self {
             client: reqwest::Client::new(),
-            token: Arc::new(Mutex::new(None)),
+            token: Arc::new(Mutex::new(initial_token)),
         }
+    }
+
+    fn save_token(token: &OneDriveToken) {
+        if let Ok(entry) = keyring::Entry::new("librisark", "onedrive_token") {
+            if let Ok(token_str) = serde_json::to_string(token) {
+                let _ = entry.set_password(&token_str);
+            }
+        }
+    }
+
+    pub async fn has_token(&self) -> bool {
+        let token_guard = self.token.lock().await;
+        token_guard.is_some()
     }
 
     pub fn get_auth_url(&self, client_id: &str) -> String {
@@ -92,6 +114,8 @@ impl OneDriveClient {
             .unwrap()
             .as_secs();
         token.expires_at = Some(now + token.expires_in);
+
+        Self::save_token(&token);
 
         let mut token_guard = self.token.lock().await;
         *token_guard = Some(token.clone());
@@ -166,6 +190,8 @@ impl OneDriveClient {
             .as_secs();
         new_token.expires_at = Some(now + new_token.expires_in);
         
+        Self::save_token(&new_token);
+
         *token_guard = Some(new_token);
         
         Ok(())
@@ -200,7 +226,7 @@ impl OneDriveClient {
             }
 
             let body: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-            if let Some(value) = body.get("value").and_then(|v| v.as_array()) {
+            if let Some(_value) = body.get("value").and_then(|v| v.as_array()) {
                 let page_items: Vec<OneDriveItem> = serde_json::from_value(body["value"].clone())
                     .map_err(|e| format!("Failed to parse items: {}", e))?;
                 items.extend(page_items);

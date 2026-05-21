@@ -24,7 +24,7 @@ export function FileList({ onSelectPaper, selectedPaperId, filter, onFilterChang
     const [papers, setPapers] = useState<Paper[]>([]);
     const [isEnriching, setIsEnriching] = useState(false);
     const [searchTerm, setSearchTerm] = useState("");
-    const [renameTemplate, setRenameTemplate] = useState("{Title}_{Author}_{Year}.pdf");
+    const [renameTemplate, setRenameTemplate] = useState("{Title}_{Year}.pdf");
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     
     // For Tags view

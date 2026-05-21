@@ -9,10 +9,32 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
+
+interface ReleaseInfo {
+  tag_name: string;
+  html_url: string;
+  body: string;
+}
+
+
 function App() {
   const [currentView, setCurrentView] = useState<"library" | "tags" | "search" | "settings">("library");
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>({ kind: "all", value: null });
+
+  const [updateAvailable, setUpdateAvailable] = useState<ReleaseInfo | null>(null);
+
+
+
+  useEffect(() => {
+    invoke<ReleaseInfo | null>("check_for_updates")
+      .then((release) => {
+        if (release) {
+          setUpdateAvailable(release);
+        }
+      })
+      .catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (!selectedPaper) return;
@@ -45,6 +67,7 @@ function App() {
               setLibraryFilter({ kind: "all", value: null });
             }
           }}
+          updateAvailable={updateAvailable}
         />
       </div>
 
