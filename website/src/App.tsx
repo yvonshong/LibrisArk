@@ -2,6 +2,7 @@
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { Brain, Shield, Zap, LayoutTemplate, MonitorSmartphone, Download, Globe } from 'lucide-react';
+import logo from './assets/logo.png';
 import './App.css';
 
 const GithubIcon = ({ size = 24 }: { size?: number }) => (
@@ -66,9 +67,7 @@ function App() {
       <nav className="fixed top-0 left-0 right-0 z-50 glass-panel border-b-0 border-x-0 border-t-0">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2 font-bold text-lg tracking-tight">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white shadow-lg">
-              <Brain size={18} />
-            </div>
+            <img src={logo} alt="LibrisArk Logo" className="w-8 h-8 object-contain rounded-md" />
             LibrisArk
           </div>
           <div className="flex items-center gap-6 text-sm font-medium">
