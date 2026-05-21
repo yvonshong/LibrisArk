@@ -9,10 +9,9 @@ interface ChatPanelProps {
     externalSelectedText?: string;
     onNoteClick?: (note: Note) => void;
     onPaperUpdated?: (paper: Paper) => void;
-    onExpandRequested?: () => void;
 }
 
-export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, onPaperUpdated, onExpandRequested }: ChatPanelProps) {
+export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, onPaperUpdated }: ChatPanelProps) {
     const [activeTab, setActiveTab] = useState<'copilot' | 'notes' | 'info'>('copilot');
     const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
     const [input, setInput] = useState("");
@@ -155,7 +154,7 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
             {/* Tab Header (Vertical) */}
             <div className="flex flex-col border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 w-14 items-center py-4 space-y-4 shrink-0">
                 <button
-                    onClick={() => { setActiveTab('copilot'); onExpandRequested?.(); }}
+                    onClick={() => setActiveTab('copilot')}
                     title="AI Copilot"
                     className={`p-2 rounded-lg transition-colors ${
                         activeTab === 'copilot'
@@ -166,7 +165,7 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
                     <Bot size={20} />
                 </button>
                 <button
-                    onClick={() => { setActiveTab('notes'); onExpandRequested?.(); }}
+                    onClick={() => setActiveTab('notes')}
                     title="Notes"
                     className={`p-2 rounded-lg transition-colors relative ${
                         activeTab === 'notes'
@@ -182,7 +181,7 @@ export function ChatPanel({ selectedPaper, externalSelectedText, onNoteClick, on
                     )}
                 </button>
                 <button
-                    onClick={() => { setActiveTab('info'); onExpandRequested?.(); }}
+                    onClick={() => setActiveTab('info')}
                     title="Paper Info"
                     className={`p-2 rounded-lg transition-colors ${
                         activeTab === 'info'

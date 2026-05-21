@@ -1,8 +1,8 @@
-import { Panel, PanelGroup, PanelResizeHandle, ImperativePanelHandle } from "react-resizable-panels";
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
 import { ChatPanel } from "./ChatPanel";
 import { Paper, Note } from "../types";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -37,11 +37,6 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
     const [isPanning, setIsPanning] = useState(false);
     const [startPan, setStartPan] = useState({ x: 0, y: 0 });
     const [scrollPan, setScrollPan] = useState({ left: 0, top: 0 });
-
-    const chatPanelRef = useRef<ImperativePanelHandle>(null);
-    const handleChatPanelExpand = useCallback(() => {
-        chatPanelRef.current?.expand();
-    }, []);
 
     // Handle Wheel Zoom (depends on selectedPaper so it binds correctly when paper loads)
     useEffect(() => {
@@ -239,8 +234,8 @@ export function Reader({ selectedPaper, onPaperUpdated }: ReaderProps) {
 
                 <PanelResizeHandle className="w-1 bg-neutral-200 dark:bg-neutral-800 hover:bg-blue-500 transition-colors cursor-col-resize z-10" />
 
-                <Panel id="chat-panel" ref={chatPanelRef} defaultSize={30} minSize={20} collapsible={true} className="h-full border-l border-neutral-200 dark:border-neutral-800">
-                    <ChatPanel selectedPaper={selectedPaper} externalSelectedText={selectedText} onNoteClick={handleNoteClick} onPaperUpdated={onPaperUpdated} onExpandRequested={handleChatPanelExpand} />
+                <Panel id="chat-panel" defaultSize={30} minSize={20} className="h-full border-l border-neutral-200 dark:border-neutral-800">
+                    <ChatPanel selectedPaper={selectedPaper} externalSelectedText={selectedText} onNoteClick={handleNoteClick} onPaperUpdated={onPaperUpdated} />
                 </Panel>
             </PanelGroup>
         </div>
